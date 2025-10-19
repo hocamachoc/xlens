@@ -195,21 +195,20 @@ def _read_and_stack(sim_seed: int) -> astTable.Table:
     """Read main + per-band FITS for a sim_seed; hstack columns (exact)."""
     detfname = os.path.join(fits_root, f"cat-{sim_seed:05d}.fits")
     if not os.path.exists(detfname):
-        raise FileNotFoundError(detfname)
+        return None
     detection = astTable.Table.read(detfname)[colnames]
 
     data_all: List[astTable.Table] = [detection]
     for band in "grizy":
         fname = os.path.join(fits_root, f"cat-{sim_seed:05d}-{band}.fits")
         if not os.path.exists(fname):
-            # If some bands are optional, just skip them. Otherwise, raise.
-            continue
+            return None
         data_all.append(astTable.Table.read(fname))
 
     # If you need strict presence of all bands, replace with join_type="exact"
-    data_all = astTable.hstack(data_all, join_type="exact")
-    data_all["sim_seed"] = sim_seed
-    return data_all
+    dd = astTable.hstack(data_all, join_type="exact")
+    dd["sim_seed"] = sim_seed
+    return dd
 
 
 def _read_truth(sim_seed: int) -> Optional[astTable.Table]:
@@ -290,26 +289,16 @@ for group_id in range(group_start + rank, group_end, size):
     seed_end = (group_id + 1) * 100
 
     for sim_seed in range(seed_start, seed_end):
-        try:
-            tab = _read_and_stack(sim_seed)
-        except FileNotFoundError:
-            continue
-
-        t = _astropy_to_arrow(tab)
-        tables.append(t)
-
-        # free memory early for astropy table
-        del tab
-        gc.collect()
+        tab = _read_and_stack(sim_seed)
+        if tab is not None:
+            tables.append(_astropy_to_arrow(tab))
+            del tab
 
         truth_tab = _read_truth(sim_seed)
         if truth_tab is not None:
             truth_tables.append(_astropy_to_arrow(truth_tab))
             del truth_tab
-            gc.collect()
-
-    if not tables and not truth_tables:
-        continue
+        gc.collect()
 
     if tables:
         combined = pa.concat_tables(tables, promote=True).combine_chunks()
@@ -317,6 +306,7 @@ for group_id in range(group_start + rank, group_end, size):
             pq_root, combined, group_id, overwrite=not args.skip_existing
         )
         del combined
+        del tables
 
     if truth_tables:
         truth_combined = pa.concat_tables(truth_tables, promote=True).combine_chunks()
@@ -324,9 +314,8 @@ for group_id in range(group_start + rank, group_end, size):
             truth_root, truth_combined, group_id, overwrite=not args.skip_existing
         )
         del truth_combined
+        del truth_tables
 
-    del tables
-    del truth_tables
     gc.collect()
 
 # Ensure all ranks finish (no-op in single process)
