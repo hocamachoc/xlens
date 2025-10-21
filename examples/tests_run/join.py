@@ -2,7 +2,7 @@
 import argparse
 import gc
 import os
-from typing import List
+from typing import List, Optional
 
 import astropy.table as astTable
 import pyarrow as pa
@@ -33,11 +33,70 @@ except Exception:
         return
 
 
+colnames = [
+    "ra",
+    "dec",
+    "wdet",
+    "dwdet_dg1",
+    "dwdet_dg2",
+    "wsel",
+    "dwsel_dg1",
+    "dwsel_dg2",
+    "mask_value",
+    "is_primary",
+    "flux_gauss0",
+    "dflux_gauss0_dg1",
+    "dflux_gauss0_dg2",
+    "flux_gauss2",
+    "dflux_gauss2_dg1",
+    "dflux_gauss2_dg2",
+    "flux_gauss4",
+    "dflux_gauss4_dg1",
+    "dflux_gauss4_dg2",
+    "flux_gauss0_err",
+    "flux_gauss2_err",
+    "flux_gauss4_err",
+    "fpfs_e1",
+    "fpfs_de1_dg1",
+    "fpfs_de1_dg2",
+    "fpfs_e2",
+    "fpfs_de2_dg1",
+    "fpfs_de2_dg2",
+    "fpfs_m0",
+    "fpfs_dm0_dg1",
+    "fpfs_dm0_dg2",
+    "fpfs_m2",
+    "fpfs_dm2_dg1",
+    "fpfs_dm2_dg2",
+    "x1_det",
+    "x2_det",
+    "fpfs1_e1",
+    "fpfs1_de1_dg1",
+    "fpfs1_e2",
+    "fpfs1_de2_dg2",
+    "fpfs1_q1",
+    "fpfs1_dq1_dg1",
+    "fpfs1_q2",
+    "fpfs1_dq2_dg2",
+    "fpfs1_m00",
+    "fpfs1_dm00_dg1",
+    "fpfs1_dm00_dg2",
+    "fpfs1_m20",
+    "fpfs1_dm20_dg1",
+    "fpfs1_dm20_dg2",
+    "fpfs1_m22c",
+    "fpfs1_dm22c_dg1",
+    "fpfs1_m22s",
+    "fpfs1_dm22s_dg2",
+    "truth_index",
+    "redshift",
+]
+
 # ------------------------------
 # Argument Parsing
 # ------------------------------
 parser = argparse.ArgumentParser(
-    description="Convert FITS catalogs to Parquet files partitioned by group_id (100 seeds).",
+    description="Convert FITS catalogs to Parquets partitioned by group_id",
     allow_abbrev=False,
 )
 parser.add_argument("--target", type=str, default="g1", help="test target")
@@ -90,7 +149,9 @@ if rank == 0:
     else:
         print(f"[Info] Running with MPI across {size} ranks.")
 if group_end - group_start <= 0:
-    raise ValueError(f"Invalid group range: start={group_start}, end={group_end}")
+    raise ValueError(
+        f"Invalid group range: start={group_start}, end={group_end}"
+    )
 
 # ------------------------------
 # Paths
@@ -116,6 +177,16 @@ pq_root = os.path.join(
 )
 os.makedirs(pq_root, exist_ok=True)
 
+truth_root = os.path.join(
+    pscratch,
+    "parquet",
+    f"constant_shear_{args.layout}",
+    test_target,
+    f"shear{int(shear_value * 100):02d}",
+    f"truth-mode{shear_mode}",
+)
+os.makedirs(truth_root, exist_ok=True)
+
 
 # ------------------------------
 # Helpers
@@ -124,19 +195,36 @@ def _read_and_stack(sim_seed: int) -> astTable.Table:
     """Read main + per-band FITS for a sim_seed; hstack columns (exact)."""
     detfname = os.path.join(fits_root, f"cat-{sim_seed:05d}.fits")
     if not os.path.exists(detfname):
-        raise FileNotFoundError(detfname)
-    detection = astTable.Table.read(detfname)
+        return None
+    detection = astTable.Table.read(detfname)[colnames]
 
     data_all: List[astTable.Table] = [detection]
     for band in "grizy":
         fname = os.path.join(fits_root, f"cat-{sim_seed:05d}-{band}.fits")
         if not os.path.exists(fname):
-            # If some bands are optional, just skip them. Otherwise, raise.
-            continue
+            return None
         data_all.append(astTable.Table.read(fname))
 
     # If you need strict presence of all bands, replace with join_type="exact"
-    return astTable.hstack(data_all, join_type="exact")
+    dd = astTable.hstack(data_all, join_type="exact")
+    dd["sim_seed"] = sim_seed
+    return dd
+
+
+def _read_truth(sim_seed: int) -> Optional[astTable.Table]:
+    """Read the truth FITS for a sim_seed (if present)."""
+    truthfname = os.path.join(fits_root, f"truth-{sim_seed:05d}.fits")
+    if not os.path.exists(truthfname):
+        return None
+
+    truth = astTable.Table.read(truthfname)
+    truth = truth.copy()
+
+    if "truth_index" not in truth.colnames and "indices" in truth.colnames:
+        truth.rename_column("indices", "truth_index")
+
+    truth["sim_seed"] = sim_seed
+    return truth
 
 
 def _astropy_to_arrow(tab: astTable.Table) -> pa.Table:
@@ -158,7 +246,7 @@ def _group_partition_dir(base_dir: str, group_id: int) -> str:
 def _write_one_group_parquet(
     base_dir: str, t: pa.Table, group_id: int, overwrite: bool
 ):
-    """Write one Parquet file per group_id to .../group_id=.../data.parquet atomically."""
+    """Write one Parquet file per group_id to .../group_id=.../data.parquet."""
     dir_path = _group_partition_dir(base_dir, group_id)
     os.makedirs(dir_path, exist_ok=True)
 
@@ -184,38 +272,50 @@ def _write_one_group_parquet(
 for group_id in range(group_start + rank, group_end, size):
     group_dir = _group_partition_dir(pq_root, group_id)
     group_path = os.path.join(group_dir, "data.parquet")
+    truth_group_dir = _group_partition_dir(truth_root, group_id)
+    truth_group_path = os.path.join(truth_group_dir, "data.parquet")
 
-    if args.skip_existing and os.path.exists(group_path):
+    if (
+        args.skip_existing
+        and os.path.exists(group_path)
+        and os.path.exists(truth_group_path)
+    ):
         continue
 
     tables: List[pa.Table] = []
+    truth_tables: List[pa.Table] = []
 
     seed_start = group_id * 100
     seed_end = (group_id + 1) * 100
 
     for sim_seed in range(seed_start, seed_end):
-        try:
-            tab = _read_and_stack(sim_seed)
-        except FileNotFoundError:
-            continue
+        tab = _read_and_stack(sim_seed)
+        if tab is not None:
+            tables.append(_astropy_to_arrow(tab))
+            del tab
 
-        t = _astropy_to_arrow(tab)
-        tables.append(t)
-
-        # free memory early for astropy table
-        del tab
+        truth_tab = _read_truth(sim_seed)
+        if truth_tab is not None:
+            truth_tables.append(_astropy_to_arrow(truth_tab))
+            del truth_tab
         gc.collect()
 
-    if not tables:
-        continue
+    if tables:
+        combined = pa.concat_tables(tables, promote=True).combine_chunks()
+        _write_one_group_parquet(
+            pq_root, combined, group_id, overwrite=not args.skip_existing
+        )
+        del combined
+        del tables
 
-    combined = pa.concat_tables(tables, promote=True).combine_chunks()
+    if truth_tables:
+        truth_combined = pa.concat_tables(truth_tables, promote=True).combine_chunks()
+        _write_one_group_parquet(
+            truth_root, truth_combined, group_id, overwrite=not args.skip_existing
+        )
+        del truth_combined
+        del truth_tables
 
-    _write_one_group_parquet(
-        pq_root, combined, group_id, overwrite=not args.skip_existing
-    )
-
-    del tables, combined
     gc.collect()
 
 # Ensure all ranks finish (no-op in single process)
