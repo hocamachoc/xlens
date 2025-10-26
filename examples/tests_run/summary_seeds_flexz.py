@@ -25,7 +25,9 @@ def parse_args() -> argparse.Namespace:
         ),
         allow_abbrev=False,
     )
-    parser.add_argument("--summary", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--summary", action=argparse.BooleanOptionalAction, default=False
+    )
     # Directory layout and naming
     parser.add_argument(
         "--pscratch",
@@ -252,6 +254,7 @@ def measure_shear_with_cut(
     i_flux = src["i_flux_gauss2"]
     z_flux = src["z_flux_gauss2"]
     y_flux = src["y_flux_gauss2"]
+    print(len(z0))
 
     mask = (
         (g_flux > flux_min)
@@ -263,6 +266,7 @@ def measure_shear_with_cut(
         & (z0 > zmin)
         & (z0 <= zmin + zwidth)
     )
+    print(np.sum(mask))
     nn = int(np.sum(mask))
     if nn == 0:
         return 0.0, 0.0, 0.0, 0.0, 0
@@ -344,7 +348,7 @@ def per_rank_work(
     dg: float,
     target: str,
     model_path: str,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+):
     ncut = len(zmin_list)
     e_pos_rows = []
     e_neg_rows = []
@@ -407,8 +411,7 @@ def per_rank_work(
         r_neg_rows.append(r_neg_row)
 
     if not e_pos_rows:
-        return tuple(np.zeros((0, ncut), dtype=np.float64) for _ in range(4))
-
+        return (np.zeros((0, ncut)),) * 4
     return (
         np.vstack(e_pos_rows),
         np.vstack(e_neg_rows),
@@ -426,7 +429,7 @@ def save_rank_partial(
     r_neg: np.ndarray,
     ncut: int,
 ) -> str:
-    partdir = os.path.join(outdir, "summary-rf-40-00")
+    partdir = os.path.join(outdir, "summary-flexz-40-00")
     os.makedirs(partdir, exist_ok=True)
     path = os.path.join(partdir, f"seed_{seed_index:05d}.npz")
     np.savez_compressed(
@@ -442,8 +445,8 @@ def save_rank_partial(
 
 def load_and_stack_all(
     outdir: str, ncut_expected: Optional[int] = None
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    partdir = os.path.join(outdir, "summary-rf-40-00")
+):
+    partdir = os.path.join(outdir, "summary-flexz-40-00")
     arrays_E_pos: List[np.ndarray] = []
     arrays_E_neg: List[np.ndarray] = []
     arrays_R_pos: List[np.ndarray] = []
@@ -511,7 +514,6 @@ def main() -> None:
 
     zmin_list = parse_zmin_list(args.z_mins)
     base_dir = outdir_path(args.pscratch, args.layout, args.target, args.shear)
-
     ncut = len(zmin_list)
 
     if not args.summary:
@@ -540,69 +542,67 @@ def main() -> None:
         )
         save_rank_partial(base_dir, index, e_pos, e_neg, r_pos, r_neg, ncut)
         comm.Barrier()
-        return
-
-    if rank == 0:
-        all_e_pos, all_e_neg, all_r_pos, all_r_neg = load_and_stack_all(
-            base_dir, ncut_expected=ncut
-        )
-
-        if all_e_pos.size == 0 or all_e_neg.size == 0:
-            raise SystemExit(
-                "No valid (+g/-g) pairs found in the given seed ID range."
+    else:
+        if rank == 0:
+            all_e_pos, all_e_neg, all_r_pos, all_r_neg = load_and_stack_all(
+                base_dir, ncut_expected=ncut
             )
 
-        num = np.sum(all_e_pos - all_e_neg, axis=0)
-        denom = np.sum(all_r_pos + all_r_neg, axis=0)
-        m = (num / denom) / args.shear - 1.0
+            if all_e_pos.size == 0 or all_e_neg.size == 0:
+                raise SystemExit(
+                    "No valid (+g/-g) pairs found in the given seed ID range."
+                )
 
-        c = np.sum(all_e_pos + all_e_neg, axis=0) / np.sum(
-            all_r_pos + all_r_neg, axis=0
-        )
+            num = np.sum(all_e_pos - all_e_neg, axis=0)
+            denom = np.sum(all_r_pos + all_r_neg, axis=0)
+            m = (num / denom) / args.shear - 1.0
 
-        area_arcmin2 = (args.stamp_dim * args.stamp_dim) * (
-            args.pixel_scale / 60.0
-        ) ** 2.0
+            c = np.sum(all_e_pos + all_e_neg, axis=0) / np.sum(
+                all_r_pos + all_r_neg, axis=0
+            )
 
-        _, _, clipped_std = sigma_clipped_stats(
-            all_e_pos / np.average(all_r_pos, axis=0),
-            sigma=5.0,
-            axis=0,
-        )
-        neff = (0.26 / clipped_std) ** 2.0 / area_arcmin2
+            area_arcmin2 = (args.stamp_dim * args.stamp_dim) * (
+                args.pixel_scale / 60.0
+            ) ** 2.0
 
-        rng = np.random.default_rng(0)
-        ms, cs = bootstrap_m(
-            rng,
-            all_e_pos,
-            all_e_neg,
-            all_r_pos,
-            all_r_neg,
-            args.shear,
-            nsamp=args.bootstrap,
-        )
-        ord_ms = np.sort(ms, axis=0)
-        lo_idx = int(0.1587 * args.bootstrap)
-        hi_idx = int(0.8413 * args.bootstrap)
-        sigma_m = (ord_ms[hi_idx] - ord_ms[lo_idx]) / 2.0
+            _, _, clipped_std = sigma_clipped_stats(
+                all_e_pos / np.average(all_r_pos, axis=0),
+                sigma=5.0,
+                axis=0,
+            )
+            neff = (0.26 / clipped_std) ** 2.0 / area_arcmin2
 
-        ord_cs = np.sort(cs, axis=0)
-        sigma_c = (ord_cs[hi_idx] - ord_cs[lo_idx]) / 2.0
+            rng = np.random.default_rng(0)
+            ms, cs = bootstrap_m(
+                rng,
+                all_e_pos,
+                all_e_neg,
+                all_r_pos,
+                all_r_neg,
+                args.shear,
+                nsamp=args.bootstrap,
+            )
+            ord_ms = np.sort(ms, axis=0)
+            lo_idx = int(0.1587 * args.bootstrap)
+            hi_idx = int(0.8413 * args.bootstrap)
+            sigma_m = (ord_ms[hi_idx] - ord_ms[lo_idx]) / 2.0
 
-        print("==============================================")
-        print(f"Catalog directory: {base_dir}")
-        print(f"Paired IDs (found): {all_e_pos.shape[0]}")
-        print(f"ID range requested: [{args.min_id}, {args.max_id})")
-        print(f"Redshift lower limits: {list(zmin_list)}")
-        print(f"Redshift slice width: {args.z_width}")
-        print(f"Area (arcmin^2): {area_arcmin2:.3f}")
-        print("m (per redshift cut):", m)
-        print("c (per redshift cut):", c)
-        print("n_eff (per redshift cut):", neff)
-        print("m 1-sigma (bootstrap):", sigma_m)
-        print("c 1-sigma (bootstrap):", sigma_c)
-        print("==============================================")
-    comm.Barrier()
+            ord_cs = np.sort(cs, axis=0)
+            sigma_c = (ord_cs[hi_idx] - ord_cs[lo_idx]) / 2.0
+
+            print("==============================================")
+            print(f"Catalog directory: {base_dir}")
+            print(f"Paired IDs (found): {all_e_pos.shape[0]}")
+            print(f"ID range requested: [{args.min_id}, {args.max_id})")
+            print(f"Redshift lower limits: {list(zmin_list)}")
+            print(f"Redshift slice width: {args.z_width}")
+            print(f"Area (arcmin^2): {area_arcmin2:.3f}")
+            print("m (per redshift cut):", m)
+            print("c (per redshift cut):", c)
+            print("n_eff (per redshift cut):", neff)
+            print("m 1-sigma (bootstrap):", sigma_m)
+            print("c 1-sigma (bootstrap):", sigma_c)
+            print("==============================================")
 
 
 if __name__ == "__main__":

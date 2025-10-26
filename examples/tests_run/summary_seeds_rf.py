@@ -269,8 +269,7 @@ def per_rank_work(ids_chunk, outdir, score_list, flux_min, emax, dg, target):
         R_neg.append(R_neg_row)
 
     if len(E_pos) == 0:
-        z = (np.zeros((0, ncut)),) * 4
-        return z
+        return (np.zeros((0, ncut)),) * 4
 
     return (
         np.vstack(E_pos),
