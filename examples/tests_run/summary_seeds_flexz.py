@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import os
-from typing import Iterable, Sequence, Tuple
+from typing import Iterable, Sequence, Tuple, List, Optional
 
 import fitsio
 import numpy as np
@@ -24,6 +25,7 @@ def parse_args() -> argparse.Namespace:
         ),
         allow_abbrev=False,
     )
+    parser.add_argument("--summary", action=argparse.BooleanOptionalAction, default=False)
     # Directory layout and naming
     parser.add_argument(
         "--pscratch",
@@ -415,6 +417,62 @@ def per_rank_work(
     )
 
 
+def save_rank_partial(
+    outdir: str,
+    seed_index: int,
+    e_pos: np.ndarray,
+    e_neg: np.ndarray,
+    r_pos: np.ndarray,
+    r_neg: np.ndarray,
+    ncut: int,
+) -> str:
+    partdir = os.path.join(outdir, "summary-rf-40-00")
+    os.makedirs(partdir, exist_ok=True)
+    path = os.path.join(partdir, f"seed_{seed_index:05d}.npz")
+    np.savez_compressed(
+        path,
+        E_pos=e_pos,
+        E_neg=e_neg,
+        R_pos=r_pos,
+        R_neg=r_neg,
+        ncut=np.int64(ncut),
+    )
+    return path
+
+
+def load_and_stack_all(
+    outdir: str, ncut_expected: Optional[int] = None
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    partdir = os.path.join(outdir, "summary-rf-40-00")
+    arrays_E_pos: List[np.ndarray] = []
+    arrays_E_neg: List[np.ndarray] = []
+    arrays_R_pos: List[np.ndarray] = []
+    arrays_R_neg: List[np.ndarray] = []
+    ncut_from_file: Optional[int] = None
+
+    for path in sorted(glob.glob(os.path.join(partdir, "*.npz"))):
+        with np.load(path) as data:
+            arrays_E_pos.append(data["E_pos"])
+            arrays_E_neg.append(data["E_neg"])
+            arrays_R_pos.append(data["R_pos"])
+            arrays_R_neg.append(data["R_neg"])
+            if ncut_from_file is None:
+                ncut_from_file = int(data["ncut"])
+
+    def _stack(blocks: List[np.ndarray], ncut: int) -> np.ndarray:
+        valid = [blk for blk in blocks if blk.size > 0]
+        if not valid:
+            return np.zeros((0, ncut), dtype=np.float64)
+        return np.vstack(valid)
+
+    ncut = ncut_expected if ncut_expected is not None else (ncut_from_file or 0)
+    E_pos_all = _stack(arrays_E_pos, ncut)
+    E_neg_all = _stack(arrays_E_neg, ncut)
+    R_pos_all = _stack(arrays_R_pos, ncut)
+    R_neg_all = _stack(arrays_R_neg, ncut)
+    return E_pos_all, E_neg_all, R_pos_all, R_neg_all
+
+
 def bootstrap_m(
     rng: np.random.Generator,
     e_pos: np.ndarray,
@@ -454,43 +512,45 @@ def main() -> None:
     zmin_list = parse_zmin_list(args.z_mins)
     base_dir = outdir_path(args.pscratch, args.layout, args.target, args.shear)
 
-    all_ids = np.arange(args.min_id, args.max_id, dtype=int)
-    total = len(all_ids)
-    base = total // size
-    rem = total % size
-    start = rank * base + min(rank, rem)
-    stop = start + base + (1 if rank < rem else 0)
-    my_ids = all_ids[start:stop]
+    ncut = len(zmin_list)
 
-    e_pos, e_neg, r_pos, r_neg = per_rank_work(
-        my_ids,
-        base_dir,
-        zmin_list,
-        args.flux_min,
-        args.emax,
-        args.z_width,
-        args.dg,
-        args.target,
-        model_path,
-    )
+    if not args.summary:
+        all_ids = np.arange(args.min_id, args.max_id, dtype=int)
+        total = len(all_ids)
+        base = total // size
+        rem = total % size
+        start = rank * base + min(rank, rem)
+        stop = start + base + (1 if rank < rem else 0)
+        my_ids = all_ids[start:stop]
 
-    gathered = comm.gather((e_pos, e_neg, r_pos, r_neg), root=0)
+        e_pos, e_neg, r_pos, r_neg = per_rank_work(
+            my_ids,
+            base_dir,
+            zmin_list,
+            args.flux_min,
+            args.emax,
+            args.z_width,
+            args.dg,
+            args.target,
+            model_path,
+        )
+
+        index = (
+            int(my_ids[0]) if len(my_ids) > 0 else (args.min_id + rank)
+        )
+        save_rank_partial(base_dir, index, e_pos, e_neg, r_pos, r_neg, ncut)
+        comm.Barrier()
+        return
 
     if rank == 0:
-        stacked_e_pos = [g[0] for g in gathered if g[0].size]
-        stacked_e_neg = [g[1] for g in gathered if g[1].size]
-        stacked_r_pos = [g[2] for g in gathered if g[2].size]
-        stacked_r_neg = [g[3] for g in gathered if g[3].size]
+        all_e_pos, all_e_neg, all_r_pos, all_r_neg = load_and_stack_all(
+            base_dir, ncut_expected=ncut
+        )
 
-        if not stacked_e_pos or not stacked_e_neg:
+        if all_e_pos.size == 0 or all_e_neg.size == 0:
             raise SystemExit(
                 "No valid (+g/-g) pairs found in the given seed ID range."
             )
-
-        all_e_pos = np.vstack(stacked_e_pos)
-        all_e_neg = np.vstack(stacked_e_neg)
-        all_r_pos = np.vstack(stacked_r_pos)
-        all_r_neg = np.vstack(stacked_r_neg)
 
         num = np.sum(all_e_pos - all_e_neg, axis=0)
         denom = np.sum(all_r_pos + all_r_neg, axis=0)
@@ -542,6 +602,7 @@ def main() -> None:
         print("m 1-sigma (bootstrap):", sigma_m)
         print("c 1-sigma (bootstrap):", sigma_c)
         print("==============================================")
+    comm.Barrier()
 
 
 if __name__ == "__main__":
