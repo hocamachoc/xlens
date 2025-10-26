@@ -2,6 +2,7 @@
 """Aggregate shear measurements over individual simulation seeds."""
 
 import argparse
+import glob
 import os
 
 import fitsio
@@ -16,6 +17,7 @@ def parse_args():
             "Measure + aggregate from catalogs over a given seed ID range."
         ),
     )
+    p.add_argument("--summary", action=argparse.BooleanOptionalAction, default=False)
     # Directory layout and naming
     p.add_argument(
         "--pscratch",
@@ -227,6 +229,49 @@ def per_rank_work(ids_chunk, outdir, flux_list, emax, dg, target):
     )
 
 
+def save_rank_partial(outdir, seed_index, E_pos, E_neg, R_pos, R_neg, ncut):
+    partdir = os.path.join(outdir, "summary-rf-40-00")
+    os.makedirs(partdir, exist_ok=True)
+    path = os.path.join(partdir, f"seed_{seed_index:05d}.npz")
+    np.savez_compressed(
+        path,
+        E_pos=E_pos,
+        E_neg=E_neg,
+        R_pos=R_pos,
+        R_neg=R_neg,
+        ncut=np.int64(ncut),
+    )
+    return path
+
+
+def load_and_stack_all(outdir, ncut_expected=None):
+    partdir = os.path.join(outdir, "summary-rf-40-00")
+    arrays_E_pos, arrays_E_neg, arrays_R_pos, arrays_R_neg = [], [], [], []
+    ncut_from_file = None
+
+    for path in sorted(glob.glob(os.path.join(partdir, "*.npz"))):
+        with np.load(path) as data:
+            arrays_E_pos.append(data["E_pos"])
+            arrays_E_neg.append(data["E_neg"])
+            arrays_R_pos.append(data["R_pos"])
+            arrays_R_neg.append(data["R_neg"])
+            if ncut_from_file is None:
+                ncut_from_file = int(data["ncut"])
+
+    def _stack(blocks, ncut):
+        blocks = [blk for blk in blocks if blk.size > 0]
+        if not blocks:
+            return np.zeros((0, ncut), dtype=np.float64)
+        return np.vstack(blocks)
+
+    ncut = ncut_expected if ncut_expected is not None else (ncut_from_file or 0)
+    E_pos_all = _stack(arrays_E_pos, ncut)
+    E_neg_all = _stack(arrays_E_neg, ncut)
+    R_pos_all = _stack(arrays_R_pos, ncut)
+    R_neg_all = _stack(arrays_R_neg, ncut)
+    return E_pos_all, E_neg_all, R_pos_all, R_neg_all
+
+
 def bootstrap_m(
     rng, e_pos, e_neg, R_pos, R_neg, shear_value, nsamp=10000
 ):  # noqa: N802 - keep historical name
@@ -257,37 +302,44 @@ def main():
     outdir = outdir_path(
         args.pscratch, args.layout, args.target, args.shear
     )
-    # Build full ID list [min_id, max_id) split across ranks
-    if args.max_id < args.min_id:
-        raise SystemExit("--max-id must be >= --min-id")
-    all_ids = np.arange(args.min_id, args.max_id, dtype=int)
+    ncut = len(flux_list)
 
-    # Even split
-    n = len(all_ids)
-    base = n // size
-    rem = n % size
-    start = rank * base + min(rank, rem)
-    stop = start + base + (1 if rank < rem else 0)
-    my_ids = all_ids[start:stop]
+    if not args.summary:
+        # Build full ID list [min_id, max_id) split across ranks
+        if args.max_id < args.min_id:
+            raise SystemExit("--max-id must be >= --min-id")
+        all_ids = np.arange(args.min_id, args.max_id, dtype=int)
 
-    # Per-rank measurement
-    E_pos, E_neg, R_pos, R_neg = per_rank_work(
-        my_ids,
-        outdir,
-        flux_list,
-        args.emax,
-        args.dg,
-        args.target,
-    )
+        # Even split
+        n = len(all_ids)
+        base = n // size
+        rem = n % size
+        start = rank * base + min(rank, rem)
+        stop = start + base + (1 if rank < rem else 0)
+        my_ids = all_ids[start:stop]
 
-    # Gather to rank 0
-    gathered = comm.gather((E_pos, E_neg, R_pos, R_neg), root=0)
+        # Per-rank measurement
+        E_pos, E_neg, R_pos, R_neg = per_rank_work(
+            my_ids,
+            outdir,
+            flux_list,
+            args.emax,
+            args.dg,
+            args.target,
+        )
+
+        index = (
+            int(my_ids[0]) if len(my_ids) > 0 else (args.min_id + rank)
+        )
+        save_rank_partial(outdir, index, E_pos, E_neg, R_pos, R_neg, ncut)
+        comm.Barrier()
+        return
+
+    # Summary mode
     if rank == 0:
-        # Concatenate along sample axis (skip empties)
-        all_E_pos = np.vstack([g[0] for g in gathered if g[0].size])
-        all_E_neg = np.vstack([g[1] for g in gathered if g[1].size])
-        all_R_pos = np.vstack([g[2] for g in gathered if g[2].size])
-        all_R_neg = np.vstack([g[3] for g in gathered if g[3].size])
+        all_E_pos, all_E_neg, all_R_pos, all_R_neg = load_and_stack_all(
+            outdir, ncut_expected=ncut
+        )
 
         if all_E_pos.size == 0 or all_E_neg.size == 0:
             raise SystemExit(
@@ -345,6 +397,7 @@ def main():
         print("m 1-sigma (bootstrap):", sigma_m)
         print("c 1-sigma (bootstrap):", sigma_c)
         print("==============================================")
+    comm.Barrier()
 
 
 if __name__ == "__main__":
