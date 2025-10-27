@@ -440,7 +440,7 @@ def save_rank_partial(
     r_neg: np.ndarray,
     ncut: int,
 ) -> str:
-    partdir = os.path.join(outdir, "summary-flexz2-40-00")
+    partdir = os.path.join(outdir, "summary-flexz-40-00")
     os.makedirs(partdir, exist_ok=True)
     path = os.path.join(partdir, f"seed_{seed_index:05d}.npz")
     np.savez_compressed(
