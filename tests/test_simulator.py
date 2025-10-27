@@ -423,9 +423,11 @@ def test_iasim():
 
 def test_reproducible():
     from pathlib import Path
+
+    from numpy.lib import recfunctions as rfn
+
     from xlens.simulator.catalog import CatalogShearTask, CatalogShearTaskConfig
     from xlens.simulator.sim import MultibandSimConfig, MultibandSimTask
-    from numpy.lib import recfunctions as rfn
     DATA_DIR = Path(__file__).parent / "data"
 
     catfname = os.path.join(DATA_DIR, "cat_seed_test.fits")
@@ -434,7 +436,8 @@ def test_reproducible():
 
     def _make_discrete_skymap():
         from lsst.skymap.discreteSkyMap import (
-            DiscreteSkyMap, DiscreteSkyMapConfig
+            DiscreteSkyMap,
+            DiscreteSkyMapConfig,
         )
         config = DiscreteSkyMapConfig()
         config.raList = [0.0]

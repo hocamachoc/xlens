@@ -107,7 +107,7 @@ def parse_args():
     p.add_argument(
         "--score-maxes",
         type=str,
-        default="0.1,0.2,0.3",
+        default="0.1,0.3,0.5,0.7,0.9",
         help="Comma-separated list of score cuts, e.g. '0.1, 0.2, 0.3'.",
     )
     p.add_argument(
@@ -386,7 +386,7 @@ def per_rank_work(group_chunk, base_dir, score_list, emax, dg, target):
 
 
 def save_rank_partial(outdir, group_index, E_pos, E_neg, R_pos, R_neg, ncut):
-    partdir = os.path.join(outdir, "summary-rf-40-00")
+    partdir = os.path.join(outdir, "summary-rf2-40-00")
     os.makedirs(partdir, exist_ok=True)
     path = os.path.join(partdir, f"group_{group_index:05d}.npz")
     np.savez_compressed(
@@ -397,7 +397,7 @@ def save_rank_partial(outdir, group_index, E_pos, E_neg, R_pos, R_neg, ncut):
 
 
 def load_and_stack_all(outdir, size, ncut_expected=None):
-    partdir = os.path.join(outdir, "summary-rf-40-00")
+    partdir = os.path.join(outdir, "summary-rf2-40-00")
     arrays_E_pos, arrays_E_neg, arrays_R_pos, arrays_R_neg = [], [], [], []
     ncut_from_file = None
 
@@ -525,16 +525,8 @@ def main():
 
             # Summary
             print("==============================================")
-            print(f"Input Directory: {base_dir}")
+            print(f"Catalog Directory: {base_dir}")
             print(f"Paired IDs (found): {all_E_pos.shape[0]}")
-            print(
-                "Group range requested: "
-                f"[{args.group_start}, {args.group_end})"
-            )
-            print(
-                "Seed range requested: "
-                f"[{args.group_start * 100}, {args.group_end * 100})"
-            )
             print(f"Score cuts: {score_list}")
             print(f"Area (arcmin^2): {area_arcmin2:.3f}")
             print("m (per score cut):", m)

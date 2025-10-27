@@ -1,5 +1,5 @@
-import pytest
 import numpy as np
+import pytest
 from lsst.afw.image import ExposureF
 from lsst.geom import Box2I, Extent2I, Point2I
 
