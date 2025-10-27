@@ -38,15 +38,15 @@ from xlens.process_pipe.anacal_detect import (
     AnacalDetectPipe,
     AnacalDetectPipeConfig,
 )
+from xlens.process_pipe.match import (
+    matchPipe,
+    matchPipeConfig,
+)
 from xlens.simulator.catalog import (
     CatalogShearTask,
     CatalogShearTaskConfig,
 )
 from xlens.simulator.sim import MultibandSimConfig, MultibandSimTask
-from xlens.process_pipe.match import (
-    matchPipe,
-    matchPipeConfig,
-)
 from xlens.utils.image import (
     combine_sim_exposures,
     estimate_noise_variance,

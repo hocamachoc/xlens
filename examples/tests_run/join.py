@@ -8,7 +8,6 @@ import astropy.table as astTable
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-
 # --- Optional MPI: works without mpirun/srun or even mpi4py installed ---
 try:
     from mpi4py import MPI  # type: ignore

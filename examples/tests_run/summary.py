@@ -14,11 +14,9 @@ import glob
 import os
 
 import numpy as np
-from astropy.stats import sigma_clipped_stats
-
 import pyarrow as pa
 import pyarrow.parquet as pq
-
+from astropy.stats import sigma_clipped_stats
 
 # --- Optional MPI: works without mpirun/srun or even mpi4py installed ---
 try:

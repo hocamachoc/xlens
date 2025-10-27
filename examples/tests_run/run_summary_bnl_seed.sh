@@ -8,15 +8,15 @@
 set -euo pipefail
 
 INDEX_START=0               # override with: --index-start N
-INDEX_END=299999            # inclusive; override with: --index-end N
-PER_TASK=100                # number of seeds per job; override with: --per-task N
-EMAX="0.30"                 # --emax F
-LAYOUT="random"             # --layout STR
+INDEX_END=2999              # inclusive; override with: --index-end N
+PER_TASK=10                 # number of IDs per job; override with: --per-task N
 TARGET="g1"                 # --target STR
 SHEAR="0.02"                # --shear F
+EMAX="0.30"                 # --emax F
+LAYOUT="random"             # --layout STR
 
 PYTHON_EXE_PATH="$(command -v python3 || true)"
-SCRIPT_PATH="summary_seeds.py"    # change with: --script path/to/summary_seeds*.py
+SCRIPT_PATH="summary_seeds.py"
 LOG_DIR="${HOME}/log"
 DRY_RUN=false
 
@@ -25,20 +25,20 @@ usage() {
 Usage: $(basename "$0") [options]
 
 Options:
-  --index-start N     start seed index (default: ${INDEX_START})
-  --index-end N       end seed index inclusive (default: ${INDEX_END})
-  --script PATH       python script to run (default: ${SCRIPT_PATH})
-  --per-task N        number of seeds processed per job (default: ${PER_TASK})
-  --emax F            emax (default: ${EMAX})
-  --layout STR        layout (default: ${LAYOUT})
-  --target STR        target (default: ${TARGET})
-  --shear F           shear (default: ${SHEAR})
-  --dry-run           print the generated submit file and exit
-  -h, --help          show this help
+  --index-start N       start index (default: ${INDEX_START})
+  --index-end N         end index inclusive (default: ${INDEX_END})
+  --script PATH         python script to run (default: ${SCRIPT_PATH})
+  --per-task N          number of IDs processed per job (default: ${PER_TASK})
+  --layout STR          layout (default: ${LAYOUT})
+  --target STR          target (default: ${TARGET})
+  --shear F             shear (default: ${SHEAR})
+  --dry-run             print the generated submit file and exit
+  -h, --help            show this help
+  --emax F              emax (default: ${EMAX})
 
 Notes:
 - python = python3 in PATH
-- logs   = $HOME/log
+- logs   = \$HOME/log
 USAGE
 }
 
@@ -100,7 +100,7 @@ universe        = vanilla
 initialdir      = ${PWD}
 notification    = never
 getenv          = true
-request_memory  = 10000
+request_memory  = 10240
 request_cpus    = 1
 
 executable      = ${PYTHON_EXE_PATH}
@@ -111,14 +111,9 @@ log             = ${LOG_DIR}/\$(ClusterId).log
 
 queue start, end from (
 $(
-  s=${INDEX_START}
-  while (( s <= INDEX_END )); do
-    e=$((s + PER_TASK))
-    if (( e > INDEX_END + 1 )); then
-      e=$((INDEX_END + 1))
-    fi
+  for i in $(seq "${INDEX_START}" "${INDEX_END}"); do
+    s=$((i*PER_TASK)); e=$((s+PER_TASK))
     printf "  %d %d\n" "$s" "$e"
-    s=$((s + PER_TASK))
   done
 )
 )

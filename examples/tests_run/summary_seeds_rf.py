@@ -4,8 +4,8 @@
 import argparse
 import glob
 import os
-import warnings
 import pickle
+import warnings
 
 import fitsio
 import numpy as np

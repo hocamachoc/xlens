@@ -10,18 +10,18 @@ mpirun -n 128 python summary.py \
 """
 
 import argparse
-import os
-
-import pyarrow as pa
-import pyarrow.parquet as pq
-import numpy as np
 import glob
-from astropy.stats import sigma_clipped_stats
-
+import os
 import pickle
 import warnings
-from sklearn.exceptions import InconsistentVersionWarning
+
+import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
+from astropy.stats import sigma_clipped_stats
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.exceptions import InconsistentVersionWarning
+
 warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
 
 # --- Optional MPI: works without mpirun/srun or even mpi4py installed ---
@@ -313,7 +313,7 @@ def bootstrap_m(
     return ms, cs
 
 
-def per_rank_work(group_chunk, input_dir, score_list, emax, dg, target):
+def per_rank_work(group_chunk, base_dir, score_list, emax, dg, target):
     """
     For each group_id in ``group_chunk``, read the +g (mode40) and -g (mode0)
     catalogs aggregated over that group's 100 sim_seeds and compute the
@@ -327,8 +327,8 @@ def per_rank_work(group_chunk, input_dir, score_list, emax, dg, target):
     R_neg = []
 
     for group_id in group_chunk:
-        ppos = parquet_group_path(input_dir, group_id, mode=40)  # +g
-        pneg = parquet_group_path(input_dir, group_id, mode=0)  # -g
+        ppos = parquet_group_path(base_dir, group_id, mode=40)  # +g
+        pneg = parquet_group_path(base_dir, group_id, mode=0)  # -g
 
         if not (os.path.isfile(ppos) and os.path.isfile(pneg)):
             # Skip if pair not complete
@@ -439,10 +439,7 @@ def main():
 
     # Save per-rank partials
     ncut = len(score_list)
-    outdir = base_path(args.pscratch, args.layout, args.target, args.shear)
-    input_dir = base_path(
-        args.pscratch, args.layout, args.target, args.shear
-    )
+    base_dir = base_path(args.pscratch, args.layout, args.target, args.shear)
 
     if not args.summary:
         # Build full group list [group_start, group_end) split across ranks
@@ -461,7 +458,7 @@ def main():
         # Per-rank measurement
         E_pos, E_neg, R_pos, R_neg = per_rank_work(
             my_groups,
-            input_dir,
+            base_dir,
             score_list,
             args.emax,
             args.dg,
@@ -473,14 +470,14 @@ def main():
             if len(my_groups) > 0
             else (args.group_start + rank)
         )
-        save_rank_partial(outdir, index, E_pos, E_neg, R_pos, R_neg, ncut)
+        save_rank_partial(base_dir, index, E_pos, E_neg, R_pos, R_neg, ncut)
         # Ensure all ranks have written their files
         _barrier()
     else:
         if rank == 0:
             # Load, stack, and (optionally) save final combined
             all_E_pos, all_E_neg, all_R_pos, all_R_neg = load_and_stack_all(
-                outdir, size, ncut_expected=ncut
+                base_dir, size, ncut_expected=ncut
             )
             if all_E_pos.size == 0 or all_E_neg.size == 0:
                 raise SystemExit(
@@ -528,7 +525,7 @@ def main():
 
             # Summary
             print("==============================================")
-            print(f"Input Directory: {input_dir}")
+            print(f"Input Directory: {base_dir}")
             print(f"Paired IDs (found): {all_E_pos.shape[0]}")
             print(
                 "Group range requested: "

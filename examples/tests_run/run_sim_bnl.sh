@@ -28,20 +28,20 @@ usage() {
   cat <<USAGE
 Usage: $(basename "$0") [options]
 
-Options (CLI-only; env vars are ignored):
-  --modes "M1,M2,..."   replace default modes (e.g. "0,40")
+Options:
   --index-start N       start index (default: ${INDEX_START})
   --index-end N         end index inclusive (default: ${INDEX_END})
-  --per-task N          number of IDs processed per job (default: ${PER_TASK})
   --script STD          python script to run (default: ${SCRIPT_PATH})
+  --per-task N          number of IDs processed per job (default: ${PER_TASK})
+  --layout STR          layout (default: ${LAYOUT})
   --target STR          target (default: ${TARGET})
   --shear F             shear (default: ${SHEAR})
   --kappa F             kappa (default: ${KAPPA})
   --rot N               rotation (default: ${ROT})
-  --layout STR          layout (default: ${LAYOUT})
   --band STR            band (default: ${BAND})
   --dry-run             print the generated submit file and exit
   -h, --help            show this help
+  --modes "M1,M2,..."   replace default modes (e.g. "0,40")
 
 Notes:
 - python = python3 in PATH
