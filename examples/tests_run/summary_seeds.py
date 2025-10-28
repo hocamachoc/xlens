@@ -104,14 +104,37 @@ def parse_flux_list(s: str):
     return [float(x) for x in s.split(",")] if s else [20.0, 40.0, 60.0]
 
 
-def outdir_path(pscratch, layout, target, shear):
+CAT_COLUMNS = [
+    "wsel",
+    "dwsel_dg1",
+    "dwsel_dg2",
+    "fpfs_e1",
+    "fpfs_de1_dg1",
+    "fpfs_de1_dg2",
+    "fpfs_e2",
+    "fpfs_de2_dg1",
+    "fpfs_de2_dg2",
+    "flux",
+    "dflux_dg1",
+    "dflux_dg2",
+]
+
+
+def base_path(pscratch, layout, target, shear):
     sd = f"shear{int(shear*100):02d}"
     return os.path.join(pscratch, f"constant_shear_{layout}", target, sd)
 
 
-def cat_path(outdir, sim_id, mode):
-    # cat-%05d-mode%d.fits
-    return os.path.join(outdir, f"cat-{sim_id:05d}-mode{mode}.fits")
+def _to_native(arr: np.ndarray) -> np.ndarray:
+    if arr.dtype.byteorder in ("=", "|"):
+        return arr
+    return arr.byteswap().newbyteorder("=")
+
+
+def cat_read(base_dir: str, sim_id: int, mode: int) -> np.ndarray:
+    path = os.path.join(base_dir, f"mode{mode}", f"cat-{sim_id:05d}.fits")
+    data = fitsio.read(path, columns=CAT_COLUMNS)
+    return _to_native(data)
 
 
 def measure_shear_flux_cut(src, flux_min, emax=0.3, dg=0.02):
@@ -161,7 +184,7 @@ def measure_shear_flux_cut(src, flux_min, emax=0.3, dg=0.02):
     return e1, (r1 + r1_sel), e2, (r2 + r2_sel), nn
 
 
-def per_rank_work(ids_chunk, outdir, flux_list, emax, dg, target):
+def per_rank_work(ids_chunk, base_dir, flux_list, emax, dg, target):
     """
     For each ID in ids_chunk, read +g (mode40) and -g (mode0) catalogs,
     compute per-flux-cut e_pos/e_neg, R_pos/R_neg, N_pos/N_neg.
@@ -174,18 +197,17 @@ def per_rank_work(ids_chunk, outdir, flux_list, emax, dg, target):
     R_neg = []
 
     for sid in ids_chunk:
-        ppos = cat_path(outdir, sid, mode=40)  # +g
-        pneg = cat_path(outdir, sid, mode=0)  # -g
-        if not (os.path.exists(ppos) and os.path.exists(pneg)):
-            # Skip if pair not complete
+        pos_path = os.path.join(base_dir, f"mode40", f"cat-{sid:05d}.fits")
+        neg_path = os.path.join(base_dir, f"mode0", f"cat-{sid:05d}.fits")
+        if not (os.path.exists(pos_path) and os.path.exists(neg_path)):
             continue
 
         try:
-            src_pos = fitsio.read(ppos)
-            src_neg = fitsio.read(pneg)
-        except OSError:
-            print(ppos)
-            print(pneg)
+            src_pos = cat_read(base_dir, sid, mode=40)
+            src_neg = cat_read(base_dir, sid, mode=0)
+        except (OSError, FileNotFoundError):
+            print(pos_path)
+            print(neg_path)
             continue
 
         e_pos_row = np.zeros(ncut)
@@ -299,7 +321,7 @@ def main():
     size = comm.Get_size()
 
     flux_list = parse_flux_list(args.flux_mins)
-    outdir = outdir_path(
+    outdir = base_path(
         args.pscratch, args.layout, args.target, args.shear
     )
     ncut = len(flux_list)
