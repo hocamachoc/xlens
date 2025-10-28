@@ -10,6 +10,7 @@ import warnings
 import fitsio
 import numpy as np
 from astropy.stats import sigma_clipped_stats
+from numpy.lib import recfunctions as rfn
 
 try:
     from mpi4py import MPI  # type: ignore
@@ -126,13 +127,47 @@ def parse_score_list(s: str):
     return [float(x) for x in s.split(",")] if s else [0.1, 0.2, 0.3]
 
 
-def outdir_path(pscratch, layout, target, shear):
+CORE_COLUMNS = [
+    "wsel",
+    "dwsel_dg1",
+    "dwsel_dg2",
+    "fpfs_e1",
+    "fpfs_de1_dg1",
+    "fpfs_de1_dg2",
+    "fpfs_e2",
+    "fpfs_de2_dg1",
+    "fpfs_de2_dg2",
+]
+
+
+def base_path(pscratch, layout, target, shear):
     sd = f"shear{int(shear*100):02d}"
     return os.path.join(pscratch, f"constant_shear_{layout}", target, sd)
 
 
-def cat_path(outdir, sim_id, mode):
-    return os.path.join(outdir, f"cat-{sim_id:05d}-mode{mode}.fits")
+def _to_native(arr: np.ndarray) -> np.ndarray:
+    if arr.dtype.byteorder in ("=", "|"):
+        return arr
+    return arr.byteswap().newbyteorder("=")
+
+
+def cat_read(base_dir: str, sim_id: int, mode: int) -> np.ndarray:
+    mode_dir = os.path.join(base_dir, f"mode{mode}")
+    main_path = os.path.join(mode_dir, f"cat-{sim_id:05d}.fits")
+    arrays = [_to_native(fitsio.read(main_path, columns=CORE_COLUMNS))]
+
+    for band in "gri":
+        cols = [
+            f"{band}_flux_gauss2",
+            f"{band}_flux_gauss2_err",
+            f"{band}_dflux_gauss2_dg1",
+            f"{band}_dflux_gauss2_dg2",
+        ]
+        band_path = os.path.join(mode_dir, f"cat-{sim_id:05d}-{band}.fits")
+        arrays.append(_to_native(fitsio.read(band_path, columns=cols)))
+
+    merged = rfn.merge_arrays(arrays, flatten=True, asrecarray=False, usemask=False)
+    return rfn.repack_fields(merged)
 
 
 def _get_score(src, comp: int = 1, dg: float = 0.0):
@@ -220,7 +255,7 @@ def measure_shear_with_cut(src, flux_min, emax=0.3, smax=1.0, dg=0.02):
     return e1, (r1 + r1_sel), e2, (r2 + r2_sel), nn
 
 
-def per_rank_work(ids_chunk, outdir, score_list, flux_min, emax, dg, target):
+def per_rank_work(ids_chunk, base_dir, score_list, flux_min, emax, dg, target):
     ncut = len(score_list)
     E_pos = []
     E_neg = []
@@ -228,16 +263,16 @@ def per_rank_work(ids_chunk, outdir, score_list, flux_min, emax, dg, target):
     R_neg = []
 
     for sid in ids_chunk:
-        ppos = cat_path(outdir, sid, mode=40)
-        pneg = cat_path(outdir, sid, mode=0)
-        if not (os.path.exists(ppos) and os.path.exists(pneg)):
+        pos_path = os.path.join(base_dir, "mode40", f"cat-{sid:05d}.fits")
+        neg_path = os.path.join(base_dir, "mode0", f"cat-{sid:05d}.fits")
+        if not (os.path.exists(pos_path) and os.path.exists(neg_path)):
             continue
         try:
-            src_pos = fitsio.read(ppos)
-            src_neg = fitsio.read(pneg)
-        except OSError:
-            print(ppos)
-            print(pneg)
+            src_pos = cat_read(base_dir, sid, mode=40)
+            src_neg = cat_read(base_dir, sid, mode=0)
+        except (OSError, FileNotFoundError):
+            print(pos_path)
+            print(neg_path)
             continue
 
         e_pos_row = np.zeros(ncut)
@@ -349,7 +384,7 @@ def main():
         raise SystemExit("--max-id must be > --min-id")
 
     score_list = parse_score_list(args.score_maxes)
-    outdir = outdir_path(args.pscratch, args.layout, args.target, args.shear)
+    outdir = base_path(args.pscratch, args.layout, args.target, args.shear)
     ncut = len(score_list)
 
     if not args.summary:
