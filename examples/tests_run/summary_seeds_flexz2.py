@@ -85,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--flux-min",
         type=float,
-        default=40.0,
+        default=30.0,  # 40
         help="Flux cut applied to each band before selection.",
     )
     parser.add_argument(
@@ -215,7 +215,8 @@ def get_color(
            (g-r), err(g-r),
            (r-i), err(r-i),
            (i-z), err(i-z),
-           (z-y), err(z-y)]
+           (z-y), err(z-y)
+           ]
     """
     A = 2.5 / np.log(10.0)
     n = src.shape[0]
@@ -265,22 +266,18 @@ def get_color(
     return feat
 
 
-def process_pz(pz_obj, color_data):
-    pdfs, z_grid = pz_obj.predict(color_data, n_grid=NUM_Z_GRIDS)
-    del color_data
-    zgrid = np.array(z_grid).flatten()
-    qp_dstn = qp.Ensemble(
-        qp.interp, data=dict(xvals=zgrid, yvals=pdfs)
-    )
-    zmode = np.ravel(qp_dstn.mode(grid=Z_GRIDS))
-    del qp_dstn, pdfs, zgrid
-    return zmode
-
 
 def get_redshift(src: np.ndarray, pz_obj, comp: int = 1, dg: float = 0.0):
     mag_zero = 30.0
     colors = get_color(src, mag_zero=mag_zero, comp=comp, dg=dg)
-    zmode = process_pz(pz_obj, colors)
+    pdfs, _ = pz_obj.predict(
+        colors,
+        n_grid=NUM_Z_GRIDS,
+    )
+    del colors
+    # Argmax per row, then map to z_grid (avoid storing pdfs beyond this)
+    idx = np.argmax(pdfs, axis=1)
+    zmode = np.take(Z_GRIDS, idx)
     return zmode
 
 
@@ -316,8 +313,11 @@ def measure_shear_with_cut(
         & (y_flux > flux_min)
         & (esq0 < emax * emax)
     )
-    z0 = get_redshift(src[mask], pz_obj=pz_obj)
-    idx0 = np.digitize(z0, zbounds, right=False)
+    idx0 = np.digitize(
+        get_redshift(src[mask], pz_obj=pz_obj),
+        zbounds,
+        right=False,
+    )
     minlen = len(zbounds) + 1
     def sel_term(comp: int) -> np.ndarray:
         g_df = src[f"g_dflux_gauss2_dg{comp}"]
@@ -341,6 +341,7 @@ def measure_shear_with_cut(
             wsel[mask_p] * src[f"fpfs_e{comp}"][mask_p],
             minlength=minlen,
         )
+        del esq_p, mask_p, z_p
 
         esq_m = get_esq(src, comp=comp, dg=-dg)
         mask_m = (
@@ -357,6 +358,7 @@ def measure_shear_with_cut(
             wsel[mask_m] * src[f"fpfs_e{comp}"][mask_m],
             minlength=minlen,
         )
+        del esq_m, mask_m, z_m
         return (ellp - ellm) / (2.0 * dg)
     if target == "g1":
         e1 = np.bincount(idx0, wsel[mask] * e1_all[mask], minlength=minlen)
@@ -388,7 +390,6 @@ def per_rank_work(
     target: str,
     pz_obj,
 ):
-
     e_pos_rows = []
     e_neg_rows = []
     r_pos_rows = []
@@ -440,7 +441,7 @@ def save_rank_partial(
     r_neg: np.ndarray,
     ncut: int,
 ) -> str:
-    partdir = os.path.join(outdir, "summary-flexz-40-00")
+    partdir = os.path.join(outdir, "summary-flexz2-40-00")
     os.makedirs(partdir, exist_ok=True)
     path = os.path.join(partdir, f"seed_{seed_index:05d}.npz")
     np.savez_compressed(
@@ -457,7 +458,7 @@ def save_rank_partial(
 def load_and_stack_all(
     outdir: str, ncut_expected: Optional[int] = None
 ):
-    partdir = os.path.join(outdir, "summary-flexz-40-00")
+    partdir = os.path.join(outdir, "summary-flexz2-40-00")
     arrays_E_pos: List[np.ndarray] = []
     arrays_E_neg: List[np.ndarray] = []
     arrays_R_pos: List[np.ndarray] = []
@@ -524,6 +525,7 @@ def main() -> None:
         model_path = args.model_path
         with open(model_path, "rb") as f:
             pz_obj = pickle.load(f)
+            pz_obj.model.models.n_jobs = 1
         my_ids = np.arange(args.min_id, args.max_id, dtype=int)
         if len(my_ids) > 0:
             e_pos, e_neg, r_pos, r_neg = per_rank_work(

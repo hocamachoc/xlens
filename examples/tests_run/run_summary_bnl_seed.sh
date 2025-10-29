@@ -100,8 +100,10 @@ universe        = vanilla
 initialdir      = ${PWD}
 notification    = never
 getenv          = true
-request_memory  = 10240
+request_memory  = 1024
 request_cpus    = 1
+environment = OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1;MKL_NUM_THREADS=1;BLIS_NUM_THREADS=1;VECLIB_MAXIMUM_THREADS=1;TBB_NUM_THREADS=1;NUMEXPR_MAX_THREADS=1;NUMEXPR_NUM_THREADS=1;MKL_DYNAMIC=FALSE
+
 
 executable      = ${PYTHON_EXE_PATH}
 arguments       = ${SCRIPT_PATH} --emax ${EMAX} --layout ${LAYOUT} --target ${TARGET} --shear ${SHEAR} --min-id \$(start) --max-id \$(end)

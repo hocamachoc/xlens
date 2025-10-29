@@ -167,6 +167,14 @@ class MultibandSimConfig(
         doc="whether to use use multi-Gaussian approximation",
         default=False,
     )
+    psf_e1 = Field[float](
+        doc="psf ellipticity, first component e1",
+        default=0.0,
+    )
+    psf_e2 = Field[float](
+        doc="psf ellipticity, second component e2",
+        default=0.0,
+    )
     include_point_source = Field[bool](
         doc="whether to include point sources in galaxies (agn or knots)",
         default=True,
@@ -445,7 +453,10 @@ class MultibandSimTask(PipelineTask):
             draw_method = "no_pixel"
         else:
             psf_fwhm = psf_fwhm_defaults[band][survey_name]
-            psf_galsim = galsim.Moffat(fwhm=psf_fwhm, beta=2.5)
+            psf_galsim = galsim.Moffat(fwhm=psf_fwhm, beta=2.5).shear(
+                e1=self.config.psf_e1,
+                e2=self.config.psf_e2,
+            )
             psf_array = psf_galsim.drawImage(
                 nx=sys_npix,
                 ny=sys_npix,
