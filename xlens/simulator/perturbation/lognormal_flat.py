@@ -17,7 +17,7 @@ class LogNormalShearFlat:
         # Create a narrow redshift distribution for the WeakLensingTracer
         z_arr = np.linspace(0, 2 * self.source_z, 100)
         dndz_arr = np.exp(-(z_arr - self.source_z)**2 / (2 * 0.01**2))
-        dndz_arr /= np.trapezoid(dndz_arr, z_arr)
+        dndz_arr /= np.trapz(dndz_arr, z_arr)
 
         tracer = ccl.WeakLensingTracer(self.cosmo, dndz=(z_arr, dndz_arr))
         
@@ -58,6 +58,7 @@ class LogNormalShearFlat:
         # 4. Apply Log-Normal Transform
         sigma_G_squared = np.var(kappa_G)
         kappa_LN = np.exp(kappa_G - sigma_G_squared / 2) - 1
+        self.kappa_LN_map = kappa_LN
 
         # 5. Generate Shear Fields
         kappa_LN_fourier = np.fft.fft2(kappa_LN)
