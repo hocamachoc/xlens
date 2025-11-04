@@ -508,12 +508,12 @@ class CatalogLogNormalTaskConfig(
 
 
 class CatalogLogNormalTask(CatalogTask):
-    _DefaultName = "CatalogHaloTask"
-    ConfigClass = CatalogHaloTaskConfig
+    _DefaultName = "CatalogLogNormalTask"
+    ConfigClass = CatalogLogNormalTaskConfig
 
     def __init__(self, **kwargs: Any):
         super().__init__(**kwargs)
-        assert isinstance(self.config, CatalogHaloTaskConfig)
+        assert isinstance(self.config, CatalogLogNormalTaskConfig)
 
     def prepare_galaxy_catalog(
         self,
@@ -521,7 +521,7 @@ class CatalogLogNormalTask(CatalogTask):
         seed,
         tract_info,
     ):
-        assert isinstance(self.config, CatalogHaloTaskConfig)
+        assert isinstance(self.config, CatalogLogNormalTaskConfig)
         galaxy_catalog = super().prepare_galaxy_catalog(
             seed=seed,
             tract_info=tract_info,
