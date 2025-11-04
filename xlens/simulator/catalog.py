@@ -36,7 +36,7 @@ from ..utils.random import (
     num_rot,
 )
 from .galaxies import CatSim2017Catalog, OpenUniverse2024RubinRomanCatalog
-from .perturbation import ShearHalo, ShearRedshift
+from .perturbation import ShearHalo, ShearRedshift, ShearLogNormalFlat
 
 
 class CatalogConnections(
@@ -382,6 +382,7 @@ class CatalogShearTaskConfig(
         super().setDefaults()
 
 
+
 class CatalogShearTask(CatalogTask):
     _DefaultName = "CatalogShearTask"
     ConfigClass = CatalogShearTaskConfig
@@ -442,7 +443,7 @@ class CatalogHaloTaskConfig(
             )
         if self.z_source is not None and self.z_lens > self.z_source:
             raise FieldValidationError(
-                self.__class__.z_lens,
+                self.__class__.z_source,
                 self,
                 "halo redshift is larger than source redshift",
             )
@@ -482,4 +483,64 @@ class CatalogHaloTask(CatalogTask):
             conc=self.config.conc,
             z_lens=self.config.z_lens,
             no_kappa=self.config.no_kappa,
+        )
+
+
+class CatalogLogNormalTaskConfig(
+    CatalogConfig,
+    pipelineConnections=CatalogConnections,
+):
+    z_source = Field[float](
+        doc="Fixed redshift for all galaxies.",
+        default=1.0,
+        optional=True,
+    )
+    no_kappa = Field[bool](
+        doc="whether to exclude kappa field",
+        default=False,
+    )
+
+    def validate(self):
+        super().validate()
+
+    def setDefaults(self):
+        super().setDefaults()
+
+
+class CatalogLogNormalTask(CatalogTask):
+    _DefaultName = "CatalogHaloTask"
+    ConfigClass = CatalogHaloTaskConfig
+
+    def __init__(self, **kwargs: Any):
+        super().__init__(**kwargs)
+        assert isinstance(self.config, CatalogHaloTaskConfig)
+
+    def prepare_galaxy_catalog(
+        self,
+        *,
+        seed,
+        tract_info,
+    ):
+        assert isinstance(self.config, CatalogHaloTaskConfig)
+        galaxy_catalog = super().prepare_galaxy_catalog(
+            seed=seed,
+            tract_info=tract_info,
+        )
+        # for fix source redshift
+        if self.config.z_source is not None:
+            galaxy_catalog.set_z_source(self.config.z_source)
+        return galaxy_catalog
+
+    def get_perturbation_object(self, tract_info, seed: int, **kwargs: Any):
+        assert isinstance(self.config, CatalogLogNormalTaskConfig)
+        wcs = tract_info.getWcs()
+        scale = float(wcs.getPixelScale().asDegrees())
+        bbox = tract_info.getBBox()   # lsst.geom.Box2I
+        field_size_deg = np.max(bbox.getHeight(), bbox.getWidth()) * 1.2 * scale
+        npix = 400 * field_size_deg
+        return ShearLogNormalFlat(
+            z_source=self.config.z_source,
+            field_size_deg=field_size_deg,
+            npix=npix,
+            seed=seed,
         )

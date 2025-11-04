@@ -279,7 +279,7 @@ for i in range(istart, iend):
         )
         detection = None
 
-    if os.path.isfile(outfname) or (sim_seed >= 30000):
+    if os.path.isfile(outfname):
         continue
 
     truth_catalog = cat_task.run(

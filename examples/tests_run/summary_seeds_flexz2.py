@@ -5,6 +5,7 @@ import gc
 import glob
 import os
 import pickle
+from sys import dont_write_bytecode
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import fitsio
@@ -40,6 +41,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--summary", action=argparse.BooleanOptionalAction, default=False
+    )
+    parser.add_argument(
+        "--correction", action=argparse.BooleanOptionalAction, default=True
     )
     # Directory layout and naming
     parser.add_argument(
@@ -290,6 +294,7 @@ def measure_shear_with_cut(
     emax: float = 0.3,
     dg: float = 0.02,
     target: str = "g1",
+    do_correction: bool = True,
 ):
     esq0 = get_esq(src)
     g_flux = src["g_flux_gauss2"]
@@ -335,13 +340,24 @@ def measure_shear_with_cut(
             & (y_flux + dg * y_df > flux_min)
             & (esq_p < emax * emax)
         )
-        z_p = get_redshift(src[mask_p], pz_obj=pz_obj, comp=comp, dg=dg)
+        if do_correction:
+            idx_p = np.digitize(
+                get_redshift(src[mask_p], pz_obj=pz_obj, comp=comp, dg=dg),
+                zbounds,
+                right=False,
+            )
+        else:
+            idx_p = np.digitize(
+                get_redshift(src[mask_p], pz_obj=pz_obj, comp=comp, dg=0.0),
+                zbounds,
+                right=False,
+            )
         ellp = np.bincount(
-            np.digitize(z_p, zbounds, right=False),
+            idx_p,
             wsel[mask_p] * src[f"fpfs_e{comp}"][mask_p],
             minlength=minlen,
         )
-        del esq_p, mask_p, z_p
+        del esq_p, mask_p, idx_p
 
         esq_m = get_esq(src, comp=comp, dg=-dg)
         mask_m = (
@@ -352,13 +368,24 @@ def measure_shear_with_cut(
             & (y_flux - dg * y_df > flux_min)
             & (esq_m < emax * emax)
         )
-        z_m = get_redshift(src[mask_m], pz_obj=pz_obj, comp=comp, dg=-dg)
+        if do_correction:
+            idx_m = np.digitize(
+                get_redshift(src[mask_m], pz_obj=pz_obj, comp=comp, dg=-dg),
+                zbounds,
+                right=False,
+            )
+        else:
+            idx_m = np.digitize(
+                get_redshift(src[mask_m], pz_obj=pz_obj, comp=comp, dg=0.0),
+                zbounds,
+                right=False,
+            )
         ellm = np.bincount(
-            np.digitize(z_m, zbounds, right=False),
+            idx_m,
             wsel[mask_m] * src[f"fpfs_e{comp}"][mask_m],
             minlength=minlen,
         )
-        del esq_m, mask_m, z_m
+        del esq_m, mask_m, idx_m
         return (ellp - ellm) / (2.0 * dg)
     if target == "g1":
         e1 = np.bincount(idx0, wsel[mask] * e1_all[mask], minlength=minlen)
@@ -389,6 +416,7 @@ def per_rank_work(
     dg: float,
     target: str,
     pz_obj,
+    do_correction: bool = True,
 ):
     e_pos_rows = []
     e_neg_rows = []
@@ -404,6 +432,7 @@ def per_rank_work(
             zbounds=zbounds,
             dg=dg,
             target=target,
+            do_correction = do_correction,
         )
         del src_pos
         gc.collect()
@@ -416,6 +445,7 @@ def per_rank_work(
             zbounds=zbounds,
             dg=dg,
             target=target,
+            do_correction = do_correction,
         )
         del src_neg
         gc.collect()
@@ -440,8 +470,11 @@ def save_rank_partial(
     r_pos: np.ndarray,
     r_neg: np.ndarray,
     ncut: int,
+    do_correction: bool = True,
 ) -> str:
     partdir = os.path.join(outdir, "summary-flexz2-40-00")
+    if not do_correction:
+        partdir = partdir + "-nc"
     os.makedirs(partdir, exist_ok=True)
     path = os.path.join(partdir, f"seed_{seed_index:05d}.npz")
     np.savez_compressed(
@@ -456,9 +489,12 @@ def save_rank_partial(
 
 
 def load_and_stack_all(
-    outdir: str, ncut_expected: Optional[int] = None
+    outdir: str, ncut_expected: Optional[int] = None,
+    do_correction: bool = True,
 ):
     partdir = os.path.join(outdir, "summary-flexz2-40-00")
+    if not do_correction:
+        partdir = partdir + "-nc"
     arrays_E_pos: List[np.ndarray] = []
     arrays_E_neg: List[np.ndarray] = []
     arrays_R_pos: List[np.ndarray] = []
@@ -515,7 +551,7 @@ def bootstrap_m(
 
 def main() -> None:
     args = parse_args()
-
+    do_correction = args.correction
     if args.max_id <= args.min_id:
         raise SystemExit("--max-id must be > --min-id")
     base_dir = base_path(args.pscratch, args.layout, args.target, args.shear)
@@ -537,13 +573,16 @@ def main() -> None:
                 args.dg,
                 args.target,
                 pz_obj,
+                do_correction=do_correction,
             )
             save_rank_partial(
-                base_dir, int(my_ids[0]), e_pos, e_neg, r_pos, r_neg, ncut
+                base_dir, int(my_ids[0]), e_pos, e_neg, r_pos, r_neg, ncut,
+                do_correction=do_correction,
             )
     else:
         all_e_pos, all_e_neg, all_r_pos, all_r_neg = load_and_stack_all(
-            base_dir, ncut_expected=ncut
+            base_dir, ncut_expected=ncut,
+            do_correction=do_correction,
         )
 
         if all_e_pos.size == 0 or all_e_neg.size == 0:

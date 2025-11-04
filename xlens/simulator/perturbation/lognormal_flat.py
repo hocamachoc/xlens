@@ -2,25 +2,35 @@ import numpy as np
 import scipy.interpolate
 import pyccl as ccl
 
-class LogNormalShearFlat:
-    def __init__(self, cosmo, source_z, field_size_deg=5.0, npix=2048, seed=None):
-        self.cosmo = cosmo
-        self.source_z = source_z
+
+class ShearLogNormalFlat:
+    def __init__(
+        self, z_source, field_size_deg=5.0, npix=2048, seed=None,
+    ):
+        # Default to use planck 2018 Cosmology
+        h, Obh2, Och2 = 0.6736, 0.02237, 0.1200
+        self.cosmo = ccl.Cosmology(
+            Omega_b=Obh2/h**2, Omega_c=Och2/h**2, h=h,
+            n_s=0.9649, A_s=2.100549e-9,  # k=0.05 Mpc^-1
+            Neff=3.046, m_nu=0.06, m_nu_type="normal",
+            Omega_k=0.0, T_CMB=2.7255,
+            transfer_function="boltzmann_class",
+            matter_power_spectrum="halofit",
+        )
+        self.z_source = z_source
         self.field_size_deg = field_size_deg
         self.npix = npix
         self.seed = seed
-
-        if self.seed is not None:
-            np.random.seed(self.seed)
+        np.random.seed(self.seed)
 
         # 1. Get Power Spectrum
         # Create a narrow redshift distribution for the WeakLensingTracer
-        z_arr = np.linspace(0, 2 * self.source_z, 100)
-        dndz_arr = np.exp(-(z_arr - self.source_z)**2 / (2 * 0.01**2))
+        z_arr = np.linspace(0, 2 * self.z_source, 100)
+        dndz_arr = np.exp(-(z_arr - self.z_source)**2 / (2 * 0.01**2))
         dndz_arr /= np.trapz(dndz_arr, z_arr)
 
         tracer = ccl.WeakLensingTracer(self.cosmo, dndz=(z_arr, dndz_arr))
-        
+
         # Define ell range for power spectrum calculation
         field_size_rad = np.deg2rad(self.field_size_deg)
         pixel_scale_rad = field_size_rad / self.npix
@@ -38,17 +48,20 @@ class LogNormalShearFlat:
         # Interpolate power spectrum to k_abs grid
         cl_interp = np.interp(k_abs, ell, cl_kappa, left=0.0, right=0.0)
 
-        # Scale power spectrum for grid and generate field
-        # The variance of the Fourier modes must be scaled to account for grid size and FFT normalization
-        # to ensure the real-space map has the correct variance.
-        # Var(FFT(kappa)) = (N_pix^4 / L^2) * C_l, where L is field size in radians.
-        # A factor of 2 is needed to compensate for power loss when taking .real of ifft of non-hermitian field.
+        # Scale power spectrum for grid and generate field The variance of the
+        # Fourier modes must be scaled to account for grid size and FFT
+        # normalization to ensure the real-space map has the correct variance.
+        # Var(FFT(kappa)) = (N_pix^4 / L^2) * C_l, where L is field size in
+        # radians. A factor of 2 is needed to compensate for power loss when
+        # taking .real of ifft of non-hermitian field.
         pk_2d_scaled = 2 * cl_interp * (self.npix**4 / (field_size_rad**2))
 
         # Generate Gaussian random field in Fourier space
-        # The 1/sqrt(2) is for the complex random numbers, which have variance 1 in real and imag parts.
+        # The 1/sqrt(2) is for the complex random numbers, which have variance
+        # 1 in real and imag parts.
         gaussian_field_fourier = np.sqrt(pk_2d_scaled) * (
-            np.random.normal(size=(self.npix, self.npix)) + 1j * np.random.normal(size=(self.npix, self.npix))
+            np.random.normal(size=(self.npix, self.npix))
+            + 1j * np.random.normal(size=(self.npix, self.npix))
         ) / np.sqrt(2.0)
 
         # 3. Transform to Real Space
@@ -75,12 +88,22 @@ class LogNormalShearFlat:
         self.kappa_map = kappa_LN
 
         # 7. Create Interpolators
-        x_coords = np.linspace(-self.field_size_deg / 2, self.field_size_deg / 2, self.npix)
-        y_coords = np.linspace(-self.field_size_deg / 2, self.field_size_deg / 2, self.npix)
+        x_coords = np.linspace(
+            -self.field_size_deg / 2, self.field_size_deg / 2, self.npix,
+        )
+        y_coords = np.linspace(
+            -self.field_size_deg / 2, self.field_size_deg / 2, self.npix,
+        )
 
-        self.kappa_interp = scipy.interpolate.RectBivariateSpline(x_coords, y_coords, self.kappa_map)
-        self.gamma1_interp = scipy.interpolate.RectBivariateSpline(x_coords, y_coords, self.gamma1_map)
-        self.gamma2_interp = scipy.interpolate.RectBivariateSpline(x_coords, y_coords, self.gamma2_map)
+        self.kappa_interp = scipy.interpolate.RectBivariateSpline(
+            x_coords, y_coords, self.kappa_map
+        )
+        self.gamma1_interp = scipy.interpolate.RectBivariateSpline(
+            x_coords, y_coords, self.gamma1_map
+        )
+        self.gamma2_interp = scipy.interpolate.RectBivariateSpline(
+            x_coords, y_coords, self.gamma2_map
+        )
 
     def distort_galaxy(self, src):
         # Input dx, dy are in arcseconds, convert to degrees
