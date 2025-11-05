@@ -1,6 +1,8 @@
+import galsim
 import numpy as np
 import scipy.interpolate
 import pyccl as ccl
+from .utils import _get_shear_res_dict
 
 
 class ShearLogNormalFlat:
@@ -12,7 +14,7 @@ class ShearLogNormalFlat:
         self.cosmo = ccl.Cosmology(
             Omega_b=Obh2/h**2, Omega_c=Och2/h**2, h=h,
             n_s=0.9649, A_s=2.100549e-9,  # k=0.05 Mpc^-1
-            Neff=3.046, m_nu=0.06, m_nu_type="normal",
+            Neff=3.046, m_nu=0.06,
             Omega_k=0.0, T_CMB=2.7255,
             transfer_function="boltzmann_class",
             matter_power_spectrum="halofit",
@@ -106,12 +108,25 @@ class ShearLogNormalFlat:
         )
 
     def distort_galaxy(self, src):
-        # Input dx, dy are in arcseconds, convert to degrees
-        dx_deg = src['dx'] / 3600.0
-        dy_deg = src['dy'] / 3600.0
-
+        dx_deg = src["dx"] / 3600.0
+        dy_deg = src["dy"] / 3600.0
         kappa = self.kappa_interp(dx_deg, dy_deg)[0, 0]
         gamma1 = self.gamma1_interp(dx_deg, dy_deg)[0, 0]
         gamma2 = self.gamma2_interp(dx_deg, dy_deg)[0, 0]
 
-        return {'gamma1': gamma1, 'gamma2': gamma2, 'kappa': kappa}
+        g1 = gamma1 / (1 - kappa)
+        g2 = gamma2 / (1 - kappa)
+        mu = 1.0 / ((1 - kappa) ** 2 - gamma1**2 - gamma2**2)
+
+        mat = galsim.Shear(g1=g1, g2=g2).getMatrix() * np.sqrt(mu)
+        lensed_x = src["dx"] * mat[0, 0] + src["dy"] * mat[0, 1]
+        lensed_y = src["dx"] * mat[1, 0] + src["dy"] * mat[1, 1]
+
+        return _get_shear_res_dict(
+                lensed_x=lensed_x,
+                lensed_y=lensed_y,
+                gamma1=gamma1,
+                gamma2=gamma2,
+                kappa=kappa,
+                has_finite_shear=True
+        )

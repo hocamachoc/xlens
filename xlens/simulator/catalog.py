@@ -536,8 +536,8 @@ class CatalogLogNormalTask(CatalogTask):
         wcs = tract_info.getWcs()
         scale = float(wcs.getPixelScale().asDegrees())
         bbox = tract_info.getBBox()   # lsst.geom.Box2I
-        field_size_deg = np.max(bbox.getHeight(), bbox.getWidth()) * 1.2 * scale
-        npix = 400 * field_size_deg
+        field_size_deg = max(bbox.getHeight(), bbox.getWidth()) * 1.2 * scale
+        npix = int(400 * field_size_deg)
         return ShearLogNormalFlat(
             z_source=self.config.z_source,
             field_size_deg=field_size_deg,
