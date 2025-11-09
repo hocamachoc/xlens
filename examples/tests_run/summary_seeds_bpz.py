@@ -561,7 +561,6 @@ def main() -> None:
         model_path = args.model_path
         with open(model_path, "rb") as f:
             pz_obj = pickle.load(f)
-            pz_obj.model.models.n_jobs = 1
         my_ids = np.arange(args.min_id, args.max_id, dtype=int)
         if len(my_ids) > 0:
             e_pos, e_neg, r_pos, r_neg = per_rank_work(
