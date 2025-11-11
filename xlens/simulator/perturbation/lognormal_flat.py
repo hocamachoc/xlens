@@ -4,6 +4,7 @@ import scipy.interpolate
 
 
 class ShearLogNormalFlat:
+
     def __init__(
         self, z_source, field_size_deg=5.0, npix=2048, seed=None,
     ):

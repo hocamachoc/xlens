@@ -8,29 +8,12 @@ import astropy.table as astTable
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-# --- Optional MPI: works without mpirun/srun or even mpi4py installed ---
-try:
-    from mpi4py import MPI  # type: ignore
-    _COMM = MPI.COMM_WORLD
-    _RANK = _COMM.Get_rank()
-    _SIZE = _COMM.Get_size()
+from mpi4py import MPI  # type: ignore
 
-    def _barrier():
-        _COMM.Barrier()
-except Exception:
-    class _FakeComm:
-        def Get_rank(self):
-            return 0
 
-        def Get_size(self):
-            return 1
-    _COMM = _FakeComm()
-    _RANK = 0
-    _SIZE = 1
-
-    def _barrier():
-        return
-
+COMM = MPI.COMM_WORLD
+RANK = COMM.Get_rank()
+SIZE = COMM.Get_size()
 
 colnames = [
     "ra",
@@ -139,14 +122,11 @@ group_end = args.end
 # ------------------------------
 # MPI (or single-process) info
 # ------------------------------
-comm = _COMM
-rank = _RANK
-size = _SIZE
-if rank == 0:
-    if size == 1:
+if RANK == 0:
+    if SIZE == 1:
         print("[Info] Running single-process (no mpirun/srun needed).")
     else:
-        print(f"[Info] Running with MPI across {size} ranks.")
+        print(f"[Info] Running with MPI across {SIZE} ranks.")
 if group_end - group_start <= 0:
     raise ValueError(
         f"Invalid group range: start={group_start}, end={group_end}"
@@ -268,7 +248,7 @@ def _write_one_group_parquet(
 # ------------------------------
 # Work loop (unique seeds per rank if MPI)
 # ------------------------------
-for group_id in range(group_start + rank, group_end, size):
+for group_id in range(group_start + RANK, group_end, SIZE):
     group_dir = _group_partition_dir(pq_root, group_id)
     group_path = os.path.join(group_dir, "data.parquet")
     truth_group_dir = _group_partition_dir(truth_root, group_id)
@@ -279,6 +259,7 @@ for group_id in range(group_start + rank, group_end, size):
         and os.path.exists(group_path)
         and os.path.exists(truth_group_path)
     ):
+        print("Already has output files")
         continue
 
     tables: List[pa.Table] = []
@@ -306,18 +287,25 @@ for group_id in range(group_start + rank, group_end, size):
         )
         del combined
         del tables
+    else:
+        print("Cannot find any input files")
 
     if truth_tables:
-        truth_combined = pa.concat_tables(truth_tables, promote=True).combine_chunks()
+        truth_combined = pa.concat_tables(
+            truth_tables, promote=True,
+        ).combine_chunks()
         _write_one_group_parquet(
-            truth_root, truth_combined, group_id, overwrite=not args.skip_existing
+            truth_root, truth_combined, group_id,
+            overwrite=not args.skip_existing
         )
         del truth_combined
         del truth_tables
+    else:
+        print("Cannot find any input files")
 
     gc.collect()
 
 # Ensure all ranks finish (no-op in single process)
-_barrier()
-if rank == 0:
+COMM.Barrier()
+if RANK == 0:
     print(f"Done. Parquet dataset at: {pq_root}")

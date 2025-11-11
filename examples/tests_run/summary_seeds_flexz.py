@@ -1,29 +1,21 @@
 #!/usr/bin/env python3
-"""Aggregate shear measurements over individual simulation seeds using FlexZBoost."""
-
-from __future__ import annotations
-
+"""Aggregate shear measurements over individual simulation using FlexZBoost."""
 import argparse
 import gc
 import glob
 import os
-from typing import Iterable, List, Optional, Sequence, Tuple
+import pickle
+from typing import Iterable, List, Optional, Tuple
 
 import fitsio
-import flexcode
 import numpy as np
-import qp
-import qp_flexzboost
-import tables_io
 from astropy.stats import sigma_clipped_stats
-from astropy.table import Table, hstack
-from numpy.typing import NDArray
-from rail.estimation.algos.flexzboost import FlexZBoostEstimator
+from numpy.lib import recfunctions as rfn
+
+from xlens.catalog import measure_shear_with_cut
+
 
 colnames = [
-    "wdet",
-    "dwdet_dg1",
-    "dwdet_dg2",
     "wsel",
     "dwsel_dg1",
     "dwsel_dg2",
@@ -33,8 +25,6 @@ colnames = [
     "fpfs_e2",
     "fpfs_de2_dg1",
     "fpfs_de2_dg2",
-    "truth_index",
-    "redshift",
 ]
 
 
@@ -48,6 +38,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--summary", action=argparse.BooleanOptionalAction, default=False
+    )
+    parser.add_argument(
+        "--correction", action=argparse.BooleanOptionalAction, default=True
     )
     # Directory layout and naming
     parser.add_argument(
@@ -93,7 +86,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--flux-min",
         type=float,
-        default=40.0,
+        default=30.0,  # 40
         help="Flux cut applied to each band before selection.",
     )
     parser.add_argument(
@@ -149,7 +142,7 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def parse_zbounds(values: str) -> Sequence[float]:
+def parse_zbounds(values: str) -> list[float]:
     return [float(x) for x in values.split(",")]
 
 
@@ -163,249 +156,47 @@ def base_path(pscratch, layout, target, shear):
     )
 
 
-def cat_read(base_dir: str, sim_id: int, mode: int) -> str:
-    dd = []
-    fname = os.path.join(
-        base_dir,
-        f"mode{mode}",
-        f"cat-{sim_id:05d}.fits"
+def _to_native(a: np.ndarray) -> np.ndarray:
+    if a.dtype.byteorder in ('=', '|'):
+        return a
+    return a.byteswap().newbyteorder('=')
+
+
+def cat_read(base_dir: str, sim_id: int, mode: int) -> np.ndarray:
+    arrs = []
+    main_path = os.path.join(base_dir, f"mode{mode}", f"cat-{sim_id:05d}.fits")
+    main = fitsio.read(main_path, columns=colnames)
+    arrs.append(_to_native(main))
+
+    for b in "grizy":
+        fn = os.path.join(base_dir, f"mode{mode}", f"cat-{sim_id:05d}-{b}.fits")
+        barr = fitsio.read(fn)
+        arrs.append(_to_native(barr))
+
+    merged = rfn.merge_arrays(
+        arrs, flatten=True, asrecarray=False, usemask=False,
     )
-    dd.append(Table.read(fname)[colnames])
-    for band in "grizy":
-        fname = os.path.join(
-            base_dir,
-            f"mode{mode}",
-            f"cat-{sim_id:05d}-{band}.fits"
-        )
-        dd.append(Table.read(fname))
-    return hstack(dd)
-
-
-def get_esq(src: Table, comp: int = 1, dg: float = 0.0) -> np.ndarray:
-    e = src[f"fpfs_e{comp}"]
-    de = src[f"fpfs_de{comp}_dg{comp}"]
-    comp2 = int(3 - comp)
-    e2 = src[f"fpfs_e{comp2}"]
-    de2 = src[f"fpfs_de{comp2}_dg{comp}"]
-    esq0 = e**2.0 + e2**2.0
-    return esq0 + 2.0 * dg * (e * de + e2 * de2)
-
-
-def get_color(src: Table, mag_zero: float, comp: int = 1, dg: float = 0.0):
-    coeff = 2.5 / np.log(10.0)
-    colors = Table()
-    for band in "grizy":
-        flux_col = f"{band}_flux_gauss2"
-        dflux_col = f"{band}_dflux_gauss2_dg{comp}"
-        err_col = f"{flux_col}_err"
-        mag_col = flux_col.replace("flux", "mag")
-        mag_err_col = err_col.replace("flux", "mag")
-
-        flux_base = src[flux_col]
-        dflux = src[dflux_col]
-        ferr = src[err_col]
-        flux = flux_base + dflux * dg
-
-        mag = np.full(len(flux), np.nan, dtype=float)
-        mag_err = np.full(len(flux), np.nan, dtype=float)
-        pos = flux > 0
-        with np.errstate(divide="ignore", invalid="ignore"):
-            mag[pos] = mag_zero - 2.5 * np.log10(flux[pos])
-            mag_err[pos] = coeff * (ferr[pos] / flux[pos])
-
-        colors[mag_col] = mag
-        colors[mag_err_col] = mag_err
-    return colors
-
-def make_color_data(data_dict, bands, err_bands, ref_band):
-    """
-    make a dataset consisting of the i-band mag and the five colors.
-    """
-    input_data = data_dict[ref_band]
-    nbands = len(bands) - 1
-    for i in range(nbands):
-        color = data_dict[bands[i]] - data_dict[bands[i + 1]]
-        input_data = np.vstack((input_data, color))
-        colorerr = np.sqrt(
-            data_dict[err_bands[i]]**2 + data_dict[err_bands[i + 1]]**2
-        )
-        input_data = np.vstack((input_data, colorerr))
-    return input_data.T
-
-
-def process_pz(pz_obj, data):
-    start = 0
-    end = len(data)
-    # convert data format to numpy dictionary
-    if tables_io.types.table_type(data) != 1:
-        data = pz_obj._convert_table_format(data, "numpyDict")
-    # replace nondetects
-    for bandname, errname in zip(pz_obj.config.bands, pz_obj.config.err_bands):
-        if np.isnan(pz_obj.config.nondetect_val):  # pragma: no cover
-            detmask = np.isnan(data[bandname])
-            data[bandname][detmask] = pz_obj.config.mag_limits[bandname]
-            data[errname][detmask] = 1.0
-        else:
-            detmask = np.isclose(
-                data[bandname],
-                pz_obj.config.nondetect_val,
-                atol=0.01,
-            )
-            data[bandname][detmask] = pz_obj.config.mag_limits[bandname]
-            data[errname][detmask] = 1.0
-    color_data = make_color_data(
-        data,
-        pz_obj.config.bands,
-        pz_obj.config.err_bands,
-        pz_obj.config.ref_band
-    )
-    if not pz_obj.config.qp_representation == 'interp':
-        raise ValueError(
-            f"do not support representation {pz_obj.config.qp_representation}"
-        )
-    pdfs, z_grid = pz_obj.model.predict(color_data, n_grid=pz_obj.config.nzbins)
-    del color_data
-    zgrid = np.array(z_grid).flatten()
-    qp_dstn = qp.Ensemble(
-        qp.interp, data=dict(xvals=zgrid, yvals=pdfs)
-    )
-    qp_dstn = pz_obj.calculate_point_estimates(qp_dstn)
-    zmode = np.ravel(qp_dstn.ancil["zmode"])
-    del qp_dstn, pdfs, zgrid
-    return zmode
-
-
-def get_redshift(src: Table, pz_obj, comp: int = 1, dg: float = 0.0):
-    mag_zero = 30.0
-    colors = get_color(src, mag_zero=mag_zero, comp=comp, dg=dg)
-    zmode = process_pz(pz_obj, colors)
-    return zmode
-
-
-def measure_shear_with_cut(
-    *,
-    src: Table,
-    pz_obj,
-    zbounds: Sequence[float],
-    flux_min: float = 40.0,
-    emax: float = 0.3,
-    dg: float = 0.02,
-    target: str = "g1",
-):
-    esq0 = get_esq(src)
-    g_flux = src["g_flux_gauss2"]
-    r_flux = src["r_flux_gauss2"]
-    i_flux = src["i_flux_gauss2"]
-    z_flux = src["z_flux_gauss2"]
-    y_flux = src["y_flux_gauss2"]
-    wsel = src["wsel"]
-    e1_all = src["fpfs_e1"]
-    e2_all = src["fpfs_e2"]
-    dwsel_dg1 = src["dwsel_dg1"]
-    dwsel_dg2 = src["dwsel_dg2"]
-    de1_dg1 = src["fpfs_de1_dg1"]
-    de2_dg2 = src["fpfs_de2_dg2"]
-
-    mask = (
-        (g_flux > flux_min)
-        & (r_flux > flux_min)
-        & (i_flux > flux_min)
-        & (z_flux > flux_min)
-        & (y_flux > flux_min)
-        & (esq0 < emax * emax)
-    )
-    z0 = get_redshift(src[mask], pz_obj=pz_obj)
-    idx0 = np.digitize(z0, zbounds, right=False)
-    minlen = len(zbounds) + 1
-    def sel_term(comp: int) -> NDArray:
-        g_df = src[f"g_dflux_gauss2_dg{comp}"]
-        r_df = src[f"r_dflux_gauss2_dg{comp}"]
-        i_df = src[f"i_dflux_gauss2_dg{comp}"]
-        z_df = src[f"z_dflux_gauss2_dg{comp}"]
-        y_df = src[f"y_dflux_gauss2_dg{comp}"]
-
-        esq_p = get_esq(src, comp=comp, dg=dg)
-        gflux_p = g_flux + dg * g_df
-        rflux_p = r_flux + dg * r_df
-        iflux_p = i_flux + dg * i_df
-        zflux_p = z_flux + dg * z_df
-        yflux_p = y_flux + dg * y_df
-        mask_p = (
-            (gflux_p > flux_min)
-            & (rflux_p > flux_min)
-            & (iflux_p > flux_min)
-            & (zflux_p > flux_min)
-            & (yflux_p > flux_min)
-            & (esq_p < emax * emax)
-        )
-        z_p = get_redshift(src[mask_p], pz_obj=pz_obj, comp=comp, dg=dg)
-        idxp = np.digitize(z_p, zbounds, right=False)
-        ellp = np.bincount(
-            idxp,
-            wsel[mask_p] * src[f"fpfs_e{comp}"][mask_p],
-            minlength=minlen,
-        )
-
-        esq_m = get_esq(src, comp=comp, dg=-dg)
-        gflux_m = g_flux - dg * g_df
-        rflux_m = r_flux - dg * r_df
-        iflux_m = i_flux - dg * i_df
-        zflux_m = z_flux - dg * z_df
-        yflux_m = y_flux - dg * y_df
-        mask_m = (
-            (gflux_m > flux_min)
-            & (rflux_m > flux_min)
-            & (iflux_m > flux_min)
-            & (zflux_m > flux_min)
-            & (yflux_m > flux_min)
-            & (esq_m < emax * emax)
-        )
-        z_m = get_redshift(src[mask_m], pz_obj=pz_obj, comp=comp, dg=-dg)
-        idxm = np.digitize(z_m, zbounds, right=False)
-        ellm = np.bincount(
-            idxm,
-            wsel[mask_m] * src[f"fpfs_e{comp}"][mask_m],
-            minlength=minlen,
-        )
-        return (ellp - ellm) / (2.0 * dg)
-    if target == "g1":
-        e1 = np.bincount(idx0, wsel[mask] * e1_all[mask], minlength=minlen)
-        r1 = np.bincount(
-            idx0,
-            dwsel_dg1[mask] * e1_all[mask] + wsel[mask] * de1_dg1[mask],
-            minlength=minlen,
-        )
-        r1_sel = sel_term(1)
-        return e1, (r1 + r1_sel)
-    else:
-        e2 = np.bincount(idx0, wsel[mask] * e2_all[mask], minlength=minlen)
-        r2 = np.bincount(
-            idx0,
-            dwsel_dg2[mask] * e2_all[mask] + wsel[mask] * de2_dg2[mask],
-            minlength=minlen,
-        )
-        r2_sel = sel_term(2)
-        return e2, (r2 + r2_sel)
+    return rfn.repack_fields(merged)
 
 
 def per_rank_work(
     ids_chunk: Iterable[int],
     base_dir: str,
-    zbounds: Sequence[float],
+    zbounds: list[float],
     flux_min: float,
     emax: float,
     dg: float,
     target: str,
     pz_obj,
+    do_correction: bool = True,
 ):
-
     e_pos_rows = []
     e_neg_rows = []
     r_pos_rows = []
     r_neg_rows = []
     for sim_id in ids_chunk:
         src_pos = cat_read(base_dir, sim_id, mode=40)
-        e_pos_row, r_pos_row = measure_shear_with_cut(
+        e_pos, r_pos, rsel_pos = measure_shear_with_cut(
             src=src_pos,
             flux_min=flux_min,
             pz_obj=pz_obj,
@@ -413,11 +204,13 @@ def per_rank_work(
             zbounds=zbounds,
             dg=dg,
             target=target,
+            do_correction=do_correction,
+            z_width95_max=4.0,
         )
         del src_pos
         gc.collect()
         src_neg = cat_read(base_dir, sim_id, mode=0)
-        e_neg_row, r_neg_row = measure_shear_with_cut(
+        e_neg, r_neg, rsel_neg = measure_shear_with_cut(
             src=src_neg,
             flux_min=flux_min,
             pz_obj=pz_obj,
@@ -425,13 +218,15 @@ def per_rank_work(
             zbounds=zbounds,
             dg=dg,
             target=target,
+            do_correction=do_correction,
+            z_width95_max=4.0,
         )
         del src_neg
         gc.collect()
-        e_pos_rows.append(e_pos_row)
-        e_neg_rows.append(e_neg_row)
-        r_pos_rows.append(r_pos_row)
-        r_neg_rows.append(r_neg_row)
+        e_pos_rows.append(e_pos)
+        e_neg_rows.append(e_neg)
+        r_pos_rows.append(r_pos + rsel_pos)
+        r_neg_rows.append(r_neg + rsel_neg)
 
     return (
         np.vstack(e_pos_rows),
@@ -449,8 +244,11 @@ def save_rank_partial(
     r_pos: np.ndarray,
     r_neg: np.ndarray,
     ncut: int,
+    do_correction: bool = True,
 ) -> str:
-    partdir = os.path.join(outdir, "summary-flexz-40-00")
+    partdir = os.path.join(outdir, "summary-flexz3-40-00")
+    if not do_correction:
+        partdir = partdir + "-nc"
     os.makedirs(partdir, exist_ok=True)
     path = os.path.join(partdir, f"seed_{seed_index:05d}.npz")
     np.savez_compressed(
@@ -465,9 +263,12 @@ def save_rank_partial(
 
 
 def load_and_stack_all(
-    outdir: str, ncut_expected: Optional[int] = None
+    outdir: str, ncut_expected: Optional[int] = None,
+    do_correction: bool = True,
 ):
-    partdir = os.path.join(outdir, "summary-flexz-40-00")
+    partdir = os.path.join(outdir, "summary-flexz3-40-00")
+    if not do_correction:
+        partdir = partdir + "-nc"
     arrays_E_pos: List[np.ndarray] = []
     arrays_E_neg: List[np.ndarray] = []
     arrays_R_pos: List[np.ndarray] = []
@@ -524,51 +325,17 @@ def bootstrap_m(
 
 def main() -> None:
     args = parse_args()
-    model_path = args.model_path
-    pz_obj = FlexZBoostEstimator.make_stage(
-        output_mode="return",
-        zmin=0.0,
-        zmax=4.0,
-        nzbins=401,
-        calc_summary_stats=False,
-        recompute_point_estimates=False,
-        calculated_point_estimates=["zmode", "zbest", "zmean", "zmedian"],
-        nondetect_val=np.nan,
-        mag_limits={
-            "g_mag_gauss2": 30.0,
-            "r_mag_gauss2": 30.0,
-            "i_mag_gauss2": 30.0,
-            "z_mag_gauss2": 30.0,
-            "y_mag_gauss2": 30.0,
-        },
-        bands=[
-            "g_mag_gauss2",
-            "r_mag_gauss2",
-            "i_mag_gauss2",
-            "z_mag_gauss2",
-            "y_mag_gauss2",
-        ],
-        err_bands=[
-            "g_mag_gauss2_err",
-            "r_mag_gauss2_err",
-            "i_mag_gauss2_err",
-            "z_mag_gauss2_err",
-            "y_mag_gauss2_err",
-        ],
-        ref_band="i_mag_gauss2",
-        qp_representation="interp",
-        nprocess=1,
-    )
-    pz_obj.open_model(model=model_path)
-
+    do_correction = args.correction
     if args.max_id <= args.min_id:
         raise SystemExit("--max-id must be > --min-id")
-
     base_dir = base_path(args.pscratch, args.layout, args.target, args.shear)
     zbounds = parse_zbounds(args.z_bounds)
     ncut = len(zbounds) + 1
-
     if not args.summary:
+        model_path = args.model_path
+        with open(model_path, "rb") as f:
+            pz_obj = pickle.load(f)
+            pz_obj.model.models.n_jobs = 1
         my_ids = np.arange(args.min_id, args.max_id, dtype=int)
         if len(my_ids) > 0:
             e_pos, e_neg, r_pos, r_neg = per_rank_work(
@@ -580,13 +347,16 @@ def main() -> None:
                 args.dg,
                 args.target,
                 pz_obj,
+                do_correction=do_correction,
             )
             save_rank_partial(
-                base_dir, int(my_ids[0]), e_pos, e_neg, r_pos, r_neg, ncut
+                base_dir, int(my_ids[0]), e_pos, e_neg, r_pos, r_neg, ncut,
+                do_correction=do_correction,
             )
     else:
         all_e_pos, all_e_neg, all_r_pos, all_r_neg = load_and_stack_all(
-            base_dir, ncut_expected=ncut
+            base_dir, ncut_expected=ncut,
+            do_correction=do_correction,
         )
 
         if all_e_pos.size == 0 or all_e_neg.size == 0:

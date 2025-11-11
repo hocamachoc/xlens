@@ -1,4 +1,4 @@
 from . import twopt
-from .basic import *
+from .base import *
 
 __all__ = ["twopt"]

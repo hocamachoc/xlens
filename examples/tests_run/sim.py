@@ -7,31 +7,7 @@ import fitsio
 import numpy as np
 from lsst.skymap.discreteSkyMap import DiscreteSkyMap, DiscreteSkyMapConfig
 
-# --- Optional MPI: works without mpirun/srun or even mpi4py installed ---
-try:
-    from mpi4py import MPI  # type: ignore
-    _COMM = MPI.COMM_WORLD
-    _RANK = _COMM.Get_rank()
-    _SIZE = _COMM.Get_size()
-
-    def _barrier():
-        _COMM.Barrier()
-except Exception:
-    # Fallback to a tiny shim so the script runs single-process
-    class _FakeComm:
-
-        def Get_rank(self):
-            return 0
-
-        def Get_size(self):
-            return 1
-    _COMM = _FakeComm()
-    _RANK = 0
-    _SIZE = 1
-
-    def _barrier():  # no-op
-        return
-
+from mpi4py import MPI
 from numpy.lib import recfunctions as rfn
 
 from xlens.process_pipe.anacal_detect import (
@@ -52,6 +28,12 @@ from xlens.utils.image import (
     estimate_noise_variance,
     generate_pure_noise,
 )
+
+
+comm = MPI.COMM_WORLD
+RANK = comm.Get_rank()
+SIZE = comm.Get_size()
+comm.Barrier()
 
 # ------------------------------
 # Argument Parsing
@@ -113,17 +95,11 @@ elif args.layout == "grid":
 else:
     raise ValueError("Cannot support layout")
 
-# ------------------------------
-# MPI (or single-process) info
-# ------------------------------
-comm = _COMM
-rank = _RANK
-size = _SIZE
-if rank == 0:
-    if size == 1:
+if RANK == 0:
+    if SIZE == 1:
         print("[Info] Running single-process (no mpirun/srun needed).")
     else:
-        print(f"[Info] Running with MPI across {size} ranks.")
+        print(f"[Info] Running with MPI across {SIZE} ranks.")
 
 # ------------------------------
 # SkyMap Setup
@@ -142,7 +118,7 @@ config.patchBorder = 0
 config.pixelScale = pixel_scale
 config.tractOverlap = 0.0
 skymap = DiscreteSkyMap(config)
-if rank == 0:
+if RANK == 0:
     print("SkyMap created.")
 
 # ------------------------------
@@ -258,10 +234,10 @@ def get_exposure(truth_catalog, sim_seed, band=None):
 
 
 # ------------------------------
-# Work loop (unique seeds per rank if MPI)
+# Work loop (unique seeds per RANK if MPI)
 # ------------------------------
 for i in range(istart, iend):
-    sim_seed = i * size + rank
+    sim_seed = i * SIZE + RANK
     if band is not None:
         outfname = os.path.join(
             outdir, "cat-%05d-%s.fits" % (sim_seed, band)
@@ -329,6 +305,6 @@ for i in range(istart, iend):
     gc.collect()
 
 # Ensure all ranks finish (no-op in single process)
-_barrier()
-if rank == 0:
+COMM.Barrier()
+if RANK == 0:
     print("Done.")
