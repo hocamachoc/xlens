@@ -14,8 +14,6 @@ def _get_shear_res_dict(
     lensed_x, lensed_y, gamma1, gamma2, kappa, has_finite_shear
 ):
 
-    assert kappa >= 0, "kappa must be non-negative"
-
     shear_res_dict = {
         "dx": lensed_x,
         "dy": lensed_y,
