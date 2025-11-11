@@ -30,10 +30,10 @@ from xlens.utils.image import (
 )
 
 
-comm = MPI.COMM_WORLD
-RANK = comm.Get_rank()
-SIZE = comm.Get_size()
-comm.Barrier()
+COMM = MPI.COMM_WORLD
+RANK = COMM.Get_rank()
+SIZE = COMM.Get_size()
+COMM.Barrier()
 
 # ------------------------------
 # Argument Parsing
