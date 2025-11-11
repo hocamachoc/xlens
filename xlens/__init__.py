@@ -1,18 +1,25 @@
-from . import (
-    analysis,
-    catalog,
-    process_pipe,
-    processor,
-    simulator,
-    utils,
-)
 from .__version__ import __version__  # noqa
 
-__all__ = [
-    "catalog",
-    "utils",
-    "simulator",
-    "processor",
-    "analysis",
-    "process_pipe",
-]
+try:
+    from . import (
+        catalog,
+        analysis,
+        process_pipe,
+        processor,
+        simulator,
+        utils,
+    )
+    __all__ = [
+        "catalog",
+        "utils",
+        "simulator",
+        "processor",
+        "analysis",
+        "process_pipe",
+    ]
+except ModuleNotFoundError:
+    from . import (
+        catalog,
+    )
+    __all__ = ["catalog"]
+

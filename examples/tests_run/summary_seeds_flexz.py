@@ -5,7 +5,7 @@ import gc
 import glob
 import os
 import pickle
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 import fitsio
 import numpy as np
@@ -142,7 +142,7 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def parse_zbounds(values: str) -> Sequence[float]:
+def parse_zbounds(values: str) -> list[float]:
     return [float(x) for x in values.split(",")]
 
 
@@ -170,20 +170,19 @@ def cat_read(base_dir: str, sim_id: int, mode: int) -> np.ndarray:
 
     for b in "grizy":
         fn = os.path.join(base_dir, f"mode{mode}", f"cat-{sim_id:05d}-{b}.fits")
-        cols = [f"{b}_flux_gauss2", f"{b}_flux_gauss2_err",
-                f"{b}_dflux_gauss2_dg1", f"{b}_dflux_gauss2_dg2"]
-        barr = fitsio.read(fn, columns=cols)
+        barr = fitsio.read(fn)
         arrs.append(_to_native(barr))
 
-    merged = rfn.merge_arrays(arrs, flatten=True, asrecarray=False, usemask=False)
+    merged = rfn.merge_arrays(
+        arrs, flatten=True, asrecarray=False, usemask=False,
+    )
     return rfn.repack_fields(merged)
-
 
 
 def per_rank_work(
     ids_chunk: Iterable[int],
     base_dir: str,
-    zbounds: Sequence[float],
+    zbounds: list[float],
     flux_min: float,
     emax: float,
     dg: float,
@@ -205,7 +204,8 @@ def per_rank_work(
             zbounds=zbounds,
             dg=dg,
             target=target,
-            do_correction = do_correction,
+            do_correction=do_correction,
+            z_width95_max=4.0,
         )
         del src_pos
         gc.collect()
@@ -218,7 +218,8 @@ def per_rank_work(
             zbounds=zbounds,
             dg=dg,
             target=target,
-            do_correction = do_correction,
+            do_correction=do_correction,
+            z_width95_max=4.0,
         )
         del src_neg
         gc.collect()

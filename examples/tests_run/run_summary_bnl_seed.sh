@@ -106,7 +106,7 @@ environment = OMP_NUM_THREADS=1;OPENBLAS_NUM_THREADS=1;MKL_NUM_THREADS=1;BLIS_NU
 
 
 executable      = ${PYTHON_EXE_PATH}
-arguments       = ${SCRIPT_PATH} --emax ${EMAX} --layout ${LAYOUT} --target ${TARGET} --shear ${SHEAR} --min-id \$(start) --max-id \$(end) --no-correction
+arguments       = ${SCRIPT_PATH} --emax ${EMAX} --layout ${LAYOUT} --target ${TARGET} --shear ${SHEAR} --min-id \$(start) --max-id \$(end)
 output          = ${LOG_DIR}/\$(ClusterId)_\$(ProcId)_seed\$(start).out
 error           = ${LOG_DIR}/\$(ClusterId)_\$(ProcId)_seed\$(start).err
 log             = ${LOG_DIR}/\$(ClusterId).log

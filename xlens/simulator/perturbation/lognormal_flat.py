@@ -1,12 +1,13 @@
 import numpy as np
 import scipy.interpolate
-import pyccl as ccl
 
 
 class ShearLogNormalFlat:
+
     def __init__(
         self, z_source, field_size_deg=5.0, npix=2048, seed=None,
     ):
+        import pyccl as ccl
         # Default to use planck 2018 Cosmology
         h, Obh2, Och2 = 0.6736, 0.02237, 0.1200
         self.cosmo = ccl.Cosmology(
