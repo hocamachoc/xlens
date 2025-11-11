@@ -1,14 +1,13 @@
 import galsim
 import numpy as np
 import scipy.interpolate
-import pyccl as ccl
-from .utils import _get_shear_res_dict
 
 
 class ShearLogNormalFlat:
     def __init__(
         self, z_source, field_size_deg=5.0, npix=2048, seed=None,
     ):
+        import pyccl as ccl
         # Default to use planck 2018 Cosmology
         h, Obh2, Och2 = 0.6736, 0.02237, 0.1200
         self.cosmo = ccl.Cosmology(
@@ -108,6 +107,7 @@ class ShearLogNormalFlat:
         )
 
     def distort_galaxy(self, src):
+        from .utils import _get_shear_res_dict
         dx_deg = src["dx"] / 3600.0
         dy_deg = src["dy"] / 3600.0
         kappa = self.kappa_interp(dx_deg, dy_deg)[0, 0]
