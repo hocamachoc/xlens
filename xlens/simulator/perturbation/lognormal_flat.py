@@ -15,9 +15,6 @@ class ShearLogNormalFlat:
             Omega_b=Obh2/h**2, Omega_c=Och2/h**2, h=h,
             n_s=0.9649, A_s=2.100549e-9,  # k=0.05 Mpc^-1
             Neff=3.046, m_nu=0.06,
-            Omega_k=0.0, T_CMB=2.7255,
-            transfer_function="boltzmann_class",
-            matter_power_spectrum="halofit",
         )
         self.z_source = z_source
         self.field_size_deg = field_size_deg
@@ -40,6 +37,8 @@ class ShearLogNormalFlat:
         l_max = np.pi / pixel_scale_rad
         ell = np.logspace(np.log10(l_min), np.log10(l_max), 1024)
         cl_kappa = ccl.angular_cl(self.cosmo, tracer, tracer, ell)
+        self.ell = ell
+        self.cl_kappa = cl_kappa
 
         # 2. Generate Gaussian Field (Fourier Space)
         # Create k-space grid
@@ -82,7 +81,7 @@ class ShearLogNormalFlat:
         k_abs[k_abs == 0] = 1e-10
 
         gamma1_fourier = ((kx**2 - ky**2) / k_abs**2) * kappa_LN_fourier
-        gamma2_fourier = ((2 * kx * ky) / k_abs**2) * kappa_LN_fourier
+        gamma2_fourier = - ((2 * kx * ky) / k_abs**2) * kappa_LN_fourier
 
         # 6. Transform Shear to Real Space
         self.gamma1_map = np.fft.ifft2(gamma1_fourier).real
